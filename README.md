@@ -1,71 +1,131 @@
 # PasteHistory · 粘贴历史
 
-一个常驻 macOS 菜单栏的剪贴板历史工具。原生 AppKit/Swift、模块化源码、无第三方依赖，本地存储、不联网。
+一个轻量、原生的 macOS 菜单栏剪贴板历史工具。使用 AppKit / Swift 编写，无第三方依赖；文本、图片、文件路径和代码片段均只保存在本地。
 
-## 功能
+[![Latest Release](https://img.shields.io/github/v/release/yqstar/PasteHistory?display_name=tag&sort=semver)](https://github.com/yqstar/PasteHistory/releases/latest)
+![macOS 13+](https://img.shields.io/badge/macOS-13%2B-black)
+![Universal](https://img.shields.io/badge/arch-Apple%20Silicon%20%7C%20Intel-blue)
 
-- **自动记录**剪贴板历史：文本、图片、文件路径三类内容
-- **全局快捷键 ⌘⇧V**：任意 App 里按一下唤出历史选择器，再按一次收起（基于 Carbon RegisterEventHotKey 注册）
-- **纯键盘操作 + 回车自动粘贴**：唤出 → 直接输入关键字搜索 → `↑`/`↓` 选择 → `回车` 即写回剪贴板**并自动粘贴到当前 App**；`⌘⌫` 删除选中项；`Esc` 取消；点击别处自动收起
-- **代码片段选择器 ⌘⇧S**：全局快捷键唤出可搜索的片段列表，回车即粘贴（与历史选择器同款界面）
-- **菜单栏快捷访问**：点击菜单栏图标，下拉显示最近 5 条；点任意一条即写回剪贴板并自动粘贴（对应 ⌘1–⌘5 快捷键）
-- **代码片段**：菜单栏直接显示最近使用的 3 条片段，更多片段收在子菜单中；片段选择器和独立全局快捷键都能一键粘贴。数据存在 `~/Library/Application Support/PasteHistory/snippets.json`
-- **设置窗口**：一页式分组卡片表单，用于调整历史条数、开机自启动、两个选择器的全局快捷键，以及清空历史、保存片段、导入和导出片段
-- **Apple 风格界面**：唤出的选择器为半透明聚焦式面板（vibrancy + 圆角 + 无边框大号搜索框 + 放大镜），列表带类型彩色图标 / 标签、相对时间（刚刚 / N 分钟前），底部用键帽样式提示快捷键，整体贴近系统 Spotlight；设置窗口改成 macOS 分组卡片表单（含 ⃝ 开关）
-- **本地持久化**：`~/Library/Application Support/PasteHistory/`，重启保留；默认上限 100 条，可在设置中调整为 10–10000 条（超出自动丢弃最旧的）
-- **去重**：重复的文本和文件记录不新增，只移到最前；图片作为独立记录保存
-- **开机自启动**：设置里可开关（基于 LaunchAgent）
+[下载最新版本](https://github.com/yqstar/PasteHistory/releases/latest) · [从源码构建](#从源码构建) · [查看全部 Releases](https://github.com/yqstar/PasteHistory/releases)
 
-> **关于权限**：「回车自动粘贴」靠模拟 ⌘V 实现，需要在 **系统设置 → 隐私与安全性 → 辅助功能** 里勾选「粘贴历史」。首次使用会自动弹出授权引导；未授权时内容仍会写入剪贴板，手动 ⌘V 即可。剪贴板监听本身不需要任何权限。
+## 界面预览
 
-## 构建
+<p align="center">
+  <img src="docs/screenshots/start_menu.jpg" width="420" alt="PasteHistory 菜单栏主界面">
+</p>
 
-需要 Xcode Command Line Tools（`xcode-select --install`）。构建产物同时支持 Apple Silicon 和 Intel Mac，最低系统版本为 macOS 13。
+<p align="center">最近 5 条历史与最近 3 条片段直接显示，其余内容按需展开。</p>
+
+## 下载与安装
+
+### 从 Release 下载（推荐）
+
+1. 打开 [最新 Release](https://github.com/yqstar/PasteHistory/releases/latest)。
+2. 下载 `PasteHistory-x.y.z-universal.dmg`。
+3. 打开 DMG，将“粘贴历史”拖入 `Applications`。
+4. 启动后，菜单栏右上角会出现剪贴板图标；应用不会显示在 Dock 中。
+
+Release 中的 Universal 版本同时支持 Apple Silicon 和 Intel Mac，最低系统版本为 macOS 13。
+
+> 当前发布包使用 ad-hoc 签名，尚未经过 Apple 公证。首次启动若出现“无法验证开发者”，可在 Finder 中右键应用并选择“打开”，再确认启动。
+
+### 从源码构建
+
+需要先安装 Xcode Command Line Tools：
 
 ```bash
-./build.sh
+xcode-select --install
 ```
 
-产物：`build/PasteHistory.app`（包含 `Resources/AppIcon.icns` 应用图标）
-
-## 运行
+克隆并构建：
 
 ```bash
+git clone https://github.com/yqstar/PasteHistory.git
+cd PasteHistory
+./build.sh
 open build/PasteHistory.app
 ```
 
-启动后没有 Dock 图标，只在菜单栏右上角显示一个剪贴板图标。要退出：菜单 → 退出（⌘Q）。
+构建产物为 `build/PasteHistory.app`，包含应用图标，并同时支持 `arm64` 和 `x86_64`。
 
-想放进“应用程序”长期使用，可以把 `build/PasteHistory.app` 拖到 `/Applications`，再开启菜单里的“开机自启动”。
+如需自行生成 DMG：
+
+```bash
+./make-dmg.sh
+```
+
+产物位于 `build/PasteHistory.dmg`。
+
+## 功能
+
+- **自动记录剪贴板**：支持文本、图片和文件路径，重复文本或文件只移动到最前，不重复新增。
+- **历史选择器**：默认按 `⌘⇧V` 唤出；直接输入关键字搜索，支持拼音匹配。
+- **代码片段选择器**：默认按 `⌘⇧S` 唤出，可按标题或内容搜索常用代码、链接和文本。
+- **键盘优先**：使用 `↑` / `↓` 选择，`Return` 粘贴，`⌘⌫` 删除，`Esc` 关闭；片段选择器还支持 `⌘E` 编辑。
+- **自动粘贴**：选中内容后写回系统剪贴板，并自动向之前使用的 App 发送 `⌘V`。
+- **菜单栏快捷访问**：显示最近 5 条历史和最近 3 条片段，历史项支持 `⌘1`–`⌘5` 快捷选择，其余内容使用懒加载子菜单。
+- **片段管理**：在设置中保存新片段，并支持 JSON 导入、导出；导入时可按 UUID 合并或替换全部。
+- **可配置设置**：自定义两个选择器的全局快捷键、历史保留条数和开机自启动。
+- **本地持久化**：所有数据保存在 `~/Library/Application Support/PasteHistory/`，应用不联网。
+
+## 使用方法
+
+### 历史选择器
+
+1. 在任意 App 中复制文本、图片或文件。
+2. 按 `⌘⇧V` 打开历史选择器。
+3. 输入关键字过滤，使用方向键选择。
+4. 按 `Return` 写回剪贴板并自动粘贴。
+
+### 片段选择器
+
+在菜单栏中可以直接使用最近片段，也可以按 `⌘⇧S` 打开完整片段选择器。片段粘贴不会被再次记录进剪贴板历史。
+
+新建、导入和导出片段的位置：
+
+```text
+菜单栏 → 设置… → 数据管理 → 代码片段
+```
+
+### 修改快捷键
+
+两个选择器的快捷键都可以在以下位置修改：
+
+```text
+菜单栏 → 设置…（⌘,）→ 快捷键
+```
+
+- 点击快捷键按钮后，按下新的组合键即可立即保存。
+- 组合键至少需要包含 `⌘`、`⌥` 或 `⌃` 之一；录制时按 `Esc` 取消。
+- 如果组合已被其他程序占用，应用会保留原快捷键并提示更换。
+- “恢复默认”可分别恢复为 `⌘⇧V` 和 `⌘⇧S`。
+
+## 权限说明
+
+监听系统剪贴板本身不需要额外权限。自动粘贴通过模拟 `⌘V` 完成，需要在以下位置允许“粘贴历史”使用辅助功能：
+
+```text
+系统设置 → 隐私与安全性 → 辅助功能
+```
+
+未授权时，选中的内容仍会写入系统剪贴板，可以手动按 `⌘V` 粘贴。
 
 ## 数据位置
 
-```
+```text
 ~/Library/Application Support/PasteHistory/
-├── history.json      # 历史记录（文本/文件路径/图片元数据）
-└── images/           # 图片内容（PNG）
+├── history.json      # 文本、文件路径和图片元数据
+├── snippets.json     # 已保存的代码片段
+└── images/           # 剪贴板图片（PNG）
 ```
 
-清空历史 = 菜单栏“设置…”→“数据管理”→“清空历史…”，或直接删除上面这个目录。
+- 历史记录默认保留 100 条，可在设置中调整为 10–10000 条。
+- 清空历史请使用“设置… → 数据管理 → 清空历史…”，该操作不会删除已保存片段。
+- 数据以明文保存在本机；如果复制过密码或其他敏感信息，请及时清理历史。
 
-## 改快捷键
+## 代码片段格式
 
-两个唤出快捷键都在 **菜单 → 设置…（⌘,）→ 通用** 里：
-
-- **唤出历史**（默认 ⌘⇧V）和 **片段选择器**（默认 ⌘⇧S）各有一个录制按钮，点一下再按下你想用的组合键即可，立即生效并保存（存在 `UserDefaults`，下次启动沿用）。
-- 组合键至少要含 ⌘ / ⌥ / ⌃ 之一（避免误抓普通按键）；录制时按 Esc 取消
-- 若选的组合已被别的程序占用，注册会失败并提示，自动保留上一个可用组合
-- 各自的“恢复默认”按钮一键回到 ⌘⇧V / ⌘⇧S
-
-## 代码片段
-
-片段数据是一份 JSON 文件，路径：
-
-```
-~/Library/Application Support/PasteHistory/snippets.json
-```
-
-格式示例：
+`snippets.json` 是一个 JSON 数组：
 
 ```json
 [
@@ -74,26 +134,37 @@ open build/PasteHistory.app
     "title": "邮箱签名",
     "content": "Best,\n张三",
     "hotKey": {
-      "keyCode": 1,
-      "carbonModifiers": 768,
-      "display": "⌘⇧S"
+      "keyCode": 18,
+      "carbonModifiers": 2304,
+      "display": "⌥⌘1"
     }
   }
 ]
 ```
 
-- `id`：任意 UUID 字符串
-- `hotKey` 可省略（不设全局快捷键）
-- 修改后**重启 App** 生效（菜单栏列表和快捷键都会重新加载）
+- `id` 为 UUID。
+- `title` 和 `content` 分别是片段标题与实际粘贴内容。
+- `hotKey` 可省略；设置后可以用独立全局快捷键直接粘贴该片段。
+- 直接编辑 JSON 后需要重启应用；日常使用建议通过设置中的导入、导出功能管理。
 
-用的时候三选一：**片段选择器（默认 ⌘⇧S）搜索后回车**、**菜单栏最近片段/其余片段子菜单**、或直接按片段的全局快捷键——内容即写回剪贴板并自动粘贴（片段粘贴不会污染历史记录）。
+## 自动发布
 
-在“设置…”→“数据管理”中可以保存新片段，并以 JSON 文件导入或导出全部片段。导入时可选择按 UUID 合并，或替换全部现有片段；片段的独立快捷键会一并保留。
+项目使用 [GitHub Actions](.github/workflows/release.yml) 自动构建 Release。推送符合 `vMAJOR.MINOR.PATCH` 格式的标签后，工作流会：
 
-> 快捷键统一走 Carbon 注册：唤出热键与各片段热键互不冲突，组合被占用时会拒绝并自动保留原设置。
+1. 构建 Apple Silicon 与 Intel 双架构应用。
+2. 校验应用签名与 DMG。
+3. 生成带版本号的 Universal DMG 和 SHA-256 文件。
+4. 创建 GitHub Release 并自动生成更新说明。
+
+发布示例：
+
+```bash
+git tag -a v1.0.1 -m "PasteHistory v1.0.1"
+git push origin v1.0.1
+```
 
 ## 说明
 
-- 文件全部是明文存储在本地，敏感内容（如密码）也会被记录——介意的话请用菜单及时清空，或不要复制敏感信息。
-- 仅记录通用剪贴板（`NSPasteboard.general`），根据活跃程度以 0.3–2 秒的间隔动态轮询。
-- 未做代码签名公证，是本地自构建的 app；若以后想分发给别人，需要自行签名 / 公证。
+- 应用仅监听通用剪贴板 `NSPasteboard.general`，根据活跃程度以 0.3–2 秒间隔动态轮询。
+- 全局快捷键使用 Carbon `RegisterEventHotKey` 注册。
+- 当前版本没有 Apple Developer ID 签名和公证；如需正式公开分发，建议在 Release 工作流中补充签名、公证和 stapling。
