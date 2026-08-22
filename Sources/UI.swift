@@ -191,10 +191,17 @@ final class PaletteController: NSObject, NSTableViewDataSource, NSTableViewDeleg
     private var query = ""
     private var deleteMonitor: Any?
     private var previousApp: NSRunningApplication?
+    private var isHiding = false
 
     var isVisible: Bool { window?.isVisible ?? false }
 
-    func toggle() { isVisible ? hide() : show() }
+    func toggle() {
+        if isVisible {
+            hide()
+        } else {
+            show()
+        }
+    }
 
     func show() {
         if window == nil { build() }
@@ -213,16 +220,22 @@ final class PaletteController: NSObject, NSTableViewDataSource, NSTableViewDeleg
         installDeleteMonitor()
     }
 
-    func hide() {
+    @discardableResult
+    func hide(reactivatePreviousApplication: Bool = true) -> NSRunningApplication? {
+        guard !isHiding else { return nil }
+        isHiding = true
+        defer { isHiding = false }
+
         removeDeleteMonitor()
-        window?.orderOut(nil)
         let prev = previousApp
         previousApp = nil
-        if let prev = prev {
-            prev.activate(options: [])
-        } else {
+        window?.orderOut(nil)
+        if reactivatePreviousApplication, let prev, !prev.isTerminated {
+            prev.activate(options: [.activateIgnoringOtherApps])
+        } else if reactivatePreviousApplication {
             NSApp.hide(nil)
         }
+        return prev
     }
 
     func reloadIfVisible() { if isVisible { reload(preserveSelection: true) } }
@@ -407,8 +420,8 @@ final class PaletteController: NSObject, NSTableViewDataSource, NSTableViewDeleg
             NSSound.beep()
             return
         }
-        hide()
-        AutoPaste.deliver()
+        let target = hide()
+        AutoPaste.deliver(to: target)
     }
 
     @objc private func activateDoubleClick() {
@@ -445,7 +458,7 @@ final class PaletteController: NSObject, NSTableViewDataSource, NSTableViewDeleg
     }
 
     func windowDidResignKey(_ notification: Notification) {
-        if isVisible { hide() }
+        if isVisible, !isHiding { hide(reactivatePreviousApplication: false) }
     }
 
     func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
