@@ -132,23 +132,50 @@ struct HotKeyConfig: Codable, Equatable {
     var carbonModifiers: UInt32
     var display: String
 
-    static let historyDefault = HotKeyConfig(keyCode: UInt32(kVK_ANSI_V),
-                                             carbonModifiers: UInt32(cmdKey | shiftKey),
-                                             display: "⌘⇧V")
+    static let historyDefault = HotKeyConfig(keyCode: UInt32(kVK_ANSI_P),
+                                             carbonModifiers: UInt32(controlKey | cmdKey),
+                                             display: "⌃⌘P")
     static let snippetDefault = HotKeyConfig(keyCode: UInt32(kVK_ANSI_S),
-                                             carbonModifiers: UInt32(cmdKey | shiftKey),
-                                             display: "⌘⇧S")
+                                             carbonModifiers: UInt32(controlKey | cmdKey),
+                                             display: "⌃⌘S")
+
+    private static let legacyHistoryDefault = HotKeyConfig(keyCode: UInt32(kVK_ANSI_V),
+                                                           carbonModifiers: UInt32(cmdKey | shiftKey),
+                                                           display: "⌘⇧V")
+    private static let legacySnippetDefault = HotKeyConfig(keyCode: UInt32(kVK_ANSI_S),
+                                                           carbonModifiers: UInt32(cmdKey | shiftKey),
+                                                           display: "⌘⇧S")
 
     private static let historyKey = "hotKeyConfig"
     private static let snippetKey = "snippetSummonHotKey"
+    private static let defaultsVersionKey = "hotKeyDefaultsVersion"
+    private static let currentDefaultsVersion = 2
 
     static var history: HotKeyConfig {
-        get { load(historyKey) ?? historyDefault }
+        get {
+            migrateLegacyDefaultsIfNeeded()
+            return load(historyKey) ?? historyDefault
+        }
         set { store(newValue, historyKey) }
     }
     static var snippet: HotKeyConfig {
-        get { load(snippetKey) ?? snippetDefault }
+        get {
+            migrateLegacyDefaultsIfNeeded()
+            return load(snippetKey) ?? snippetDefault
+        }
         set { store(newValue, snippetKey) }
+    }
+
+    private static func migrateLegacyDefaultsIfNeeded() {
+        let defaults = UserDefaults.standard
+        guard defaults.integer(forKey: defaultsVersionKey) < currentDefaultsVersion else { return }
+        if load(historyKey) == legacyHistoryDefault {
+            store(historyDefault, historyKey)
+        }
+        if load(snippetKey) == legacySnippetDefault {
+            store(snippetDefault, snippetKey)
+        }
+        defaults.set(currentDefaultsVersion, forKey: defaultsVersionKey)
     }
 
     private static func load(_ key: String) -> HotKeyConfig? {

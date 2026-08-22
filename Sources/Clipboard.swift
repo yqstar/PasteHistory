@@ -164,39 +164,62 @@ func restoreToClipboard(_ item: ClipItem, store: HistoryStore) -> Bool {
     }
 }
 
-// MARK: - Auto-paste (simulate ⌘V into the frontmost app)
+// MARK: - Auto-paste (simulate ⌘V in the originating app)
 
 enum AutoPaste {
     static var isTrusted: Bool { AXIsProcessTrusted() }
     private static var didPrompt = false
     private static var didSecureAlert = false
 
-    static func deliver(after delay: Double = 0.15) {
+    /// Sends paste directly to the app that owned focus before PasteHistory opened.
+    /// App activation is asynchronous, so posting only to the global event stream can
+    /// otherwise send Command-V back to PasteHistory while its palette is closing.
+    static func deliver(to application: NSRunningApplication? = nil, after delay: Double = 0.15) {
+        let target = pasteTarget(application)
         if isTrusted {
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { postPaste() }
+            if let target, !target.isActive {
+                target.activate(options: [.activateIgnoringOtherApps])
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                guard target?.isTerminated != true else { return }
+                postPaste(to: target?.processIdentifier)
+            }
         } else {
             showPermissionAlertIfNeeded()
         }
     }
 
-    private static func postPaste() {
+    private static func pasteTarget(_ preferred: NSRunningApplication?) -> NSRunningApplication? {
+        let ownPID = ProcessInfo.processInfo.processIdentifier
+        if let preferred, !preferred.isTerminated, preferred.processIdentifier != ownPID {
+            return preferred
+        }
+        guard let frontmost = NSWorkspace.shared.frontmostApplication,
+              frontmost.processIdentifier != ownPID else { return nil }
+        return frontmost
+    }
+
+    private static func postPaste(to processIdentifier: pid_t?) {
         if IsSecureEventInputEnabled() {
             showSecureInputAlertIfNeeded()
             return
         }
         let src = CGEventSource(stateID: .combinedSessionState)
         let v = CGKeyCode(kVK_ANSI_V)
-        let cmd = CGKeyCode(kVK_Command)
-        let cmdDown = CGEvent(keyboardEventSource: src, virtualKey: cmd, keyDown: true)
-        let vDown   = CGEvent(keyboardEventSource: src, virtualKey: v,   keyDown: true)
-        let vUp     = CGEvent(keyboardEventSource: src, virtualKey: v,   keyDown: false)
-        let cmdUp   = CGEvent(keyboardEventSource: src, virtualKey: cmd, keyDown: false)
-        vDown?.flags = .maskCommand
-        vUp?.flags   = .maskCommand
-        cmdDown?.post(tap: .cghidEventTap)
-        vDown?.post(tap: .cghidEventTap)
-        vUp?.post(tap: .cghidEventTap)
-        cmdUp?.post(tap: .cghidEventTap)
+        guard let vDown = CGEvent(keyboardEventSource: src, virtualKey: v, keyDown: true),
+              let vUp = CGEvent(keyboardEventSource: src, virtualKey: v, keyDown: false) else {
+            NSLog("[PasteHistory] unable to create paste keyboard events")
+            return
+        }
+        vDown.flags = .maskCommand
+        vUp.flags = .maskCommand
+        if let processIdentifier {
+            vDown.postToPid(processIdentifier)
+            vUp.postToPid(processIdentifier)
+        } else {
+            vDown.post(tap: .cghidEventTap)
+            vUp.post(tap: .cghidEventTap)
+        }
     }
 
     private static func showPermissionAlertIfNeeded() {
