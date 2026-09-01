@@ -148,3 +148,12 @@ func matchesQuery(_ text: String, _ query: String) -> Bool {
     CFStringTransform(mutable, nil, kCFStringTransformStripDiacritics, false)
     return (mutable as String).localizedCaseInsensitiveContains(query)
 }
+
+func restoredSelectionIndex(previousID: UUID?, previousIndex: Int,
+                            newIDs: [UUID]) -> Int? {
+    guard !newIDs.isEmpty else { return nil }
+    if let previousID, let index = newIDs.firstIndex(of: previousID) {
+        return index
+    }
+    return min(max(previousIndex, 0), newIDs.count - 1)
+}

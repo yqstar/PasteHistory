@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 final class HistoryWindowController {
     let store: HistoryStore
     let monitor: ClipboardMonitor
+    var onSaveAsSnippet: ((String) -> Void)?
 
     private let palette = PaletteController()
     private var filtered: [ClipItem] = []
@@ -17,10 +18,12 @@ final class HistoryWindowController {
         self.monitor = monitor
         palette.placeholder = "搜索粘贴历史…"
         palette.emptyText = "暂无历史，复制点东西试试"
-        palette.footerHints = [("↩", "粘贴"), ("⌘⌫", "删除"), ("esc", "关闭")]
+        palette.footerHints = [("↩", "粘贴"), ("⌘⌫", "删除"), ("esc", "关闭"), ("⌘S", "保存片段")]
+        palette.separatesLastFooterHint = true
         palette.provider = { [weak self] q in self?.rows(for: q) ?? [] }
         palette.onActivate = { [weak self] i in self?.activate(i) ?? false }
         palette.onDelete = { [weak self] i in self?.deleteAt(i) }
+        palette.onSaveRow = { [weak self] i in self?.saveAsSnippetAt(i) }
     }
 
     func show() { palette.show() }
@@ -37,7 +40,8 @@ final class HistoryWindowController {
             }
         }
         return filtered.map { item in
-            PaletteRow(icon: icon(for: item),
+            PaletteRow(id: item.id,
+                       icon: icon(for: item),
                        iconIsTemplate: item.kind != .image,
                        iconTint: kindColor(item.kind),
                        title: item.oneLine(120),
@@ -79,6 +83,19 @@ final class HistoryWindowController {
         guard i >= 0, i < filtered.count else { return }
         store.delete(id: filtered[i].id)
     }
+
+    private func saveAsSnippetAt(_ i: Int) {
+        guard i >= 0, i < filtered.count,
+              filtered[i].kind == .text,
+              let content = filtered[i].text,
+              !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let onSaveAsSnippet else {
+            NSSound.beep()
+            return
+        }
+        palette.hide(reactivatePreviousApplication: false)
+        onSaveAsSnippet(content)
+    }
 }
 
 // MARK: - Snippet picker controller
@@ -87,9 +104,11 @@ final class SnippetPickerWindowController {
     let store: SnippetStore
     let monitor: ClipboardMonitor
     var onEdit: ((Snippet) -> Void)?
+    var onError: ((String) -> Void)?
 
     private let palette = PaletteController()
     private var filtered: [Snippet] = []
+    private var activeHotKeyIDs = Set<UUID>()
 
     init(store: SnippetStore, monitor: ClipboardMonitor) {
         self.store = store
@@ -108,6 +127,11 @@ final class SnippetPickerWindowController {
     func toggle() { palette.toggle() }
     func refreshIfVisible() { palette.reloadIfVisible() }
 
+    func updateHotKeyRegistration(activeIDs: Set<UUID>) {
+        activeHotKeyIDs = activeIDs
+        refreshIfVisible()
+    }
+
     private func editAt(_ i: Int) {
         guard i >= 0, i < filtered.count else { return }
         palette.hide()
@@ -124,7 +148,9 @@ final class SnippetPickerWindowController {
         }
         return filtered.map { s in
             let kind = snippetKind(of: s.content)
-            return PaletteRow(icon: NSImage(systemSymbolName: kind.symbolName,
+            let hotKeyActive = s.hotKey == nil || activeHotKeyIDs.contains(s.id)
+            return PaletteRow(id: s.id,
+                              icon: NSImage(systemSymbolName: kind.symbolName,
                                             accessibilityDescription: nil),
                               iconIsTemplate: true,
                               iconTint: kind.color,
@@ -132,8 +158,10 @@ final class SnippetPickerWindowController {
                               subtitle: subtitle(for: s.content),
                               badge: kind.label,
                               badgeColor: kind.color,
-                              accessoryBadge: s.hotKey?.display,
-                              accessoryBadgeColor: nil)
+                              accessoryBadge: s.hotKey.map {
+                                  hotKeyActive ? $0.display : "\($0.display) 冲突"
+                              },
+                              accessoryBadgeColor: hotKeyActive ? nil : .systemRed)
         }
     }
 
@@ -166,7 +194,11 @@ final class SnippetPickerWindowController {
 
     private func deleteAt(_ i: Int) {
         guard i >= 0, i < filtered.count else { return }
-        store.delete(id: filtered[i].id)
+        do {
+            try store.delete(id: filtered[i].id)
+        } catch {
+            onError?(error.localizedDescription)
+        }
     }
 }
 
@@ -184,9 +216,9 @@ final class SnippetEditorWindowController: NSObject, NSWindowDelegate {
         self.store = store
     }
 
-    func show() {
+    func showNew(content: String) {
         editing = nil
-        showWindow(title: "保存片段", name: "", content: "")
+        showWindow(title: "保存片段", name: "", content: content)
     }
 
     func showEdit(_ snippet: Snippet) {
@@ -294,19 +326,57 @@ final class SnippetEditorWindowController: NSObject, NSWindowDelegate {
         let rawTitle = titleField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         let content = contentView.string
         let bodyEmpty = content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        if rawTitle.isEmpty && bodyEmpty {
-            window.orderOut(nil)
+        guard !bodyEmpty else {
+            showEditorError(title: "无法保存片段", message: "片段正文不能为空")
+            window.makeFirstResponder(contentView)
             return
         }
-        let title = rawTitle.isEmpty ? "未命名" : rawTitle
-        if var s = editing {
-            s.title = title
-            s.content = content
-            store.update(s)
-        } else {
-            store.add(title: title, content: content)
+        let title = rawTitle.isEmpty ? defaultTitle(for: content) : rawTitle
+        do {
+            if var snippet = editing {
+                snippet.title = title
+                snippet.content = content
+                try store.update(snippet)
+                window.orderOut(nil)
+            } else {
+                switch try store.add(title: title, content: content) {
+                case .added:
+                    window.orderOut(nil)
+                case .duplicate(let existing):
+                    openExisting(existing)
+                }
+            }
+        } catch SnippetStore.StoreError.duplicateContent(let existing) {
+            openExisting(existing)
+        } catch {
+            showEditorError(title: "无法保存片段", message: error.localizedDescription)
         }
-        window.orderOut(nil)
+    }
+
+    private func defaultTitle(for content: String) -> String {
+        let first = content.components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty } ?? "未命名"
+        return first.count > 60 ? String(first.prefix(60)) + "…" : first
+    }
+
+    private func openExisting(_ snippet: Snippet) {
+        editing = snippet
+        window.title = "编辑片段"
+        titleField.stringValue = snippet.title
+        contentView.string = snippet.content
+        window.makeFirstResponder(titleField)
+        showEditorError(title: "片段已存在",
+                        message: "相同正文已存在，已为你打开原片段。")
+    }
+
+    private func showEditorError(title: String, message: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "好")
+        alert.beginSheetModal(for: window)
     }
 }
 
@@ -315,7 +385,6 @@ final class SnippetEditorWindowController: NSObject, NSWindowDelegate {
 final class SettingsWindowController: NSObject, NSWindowDelegate, NSTextFieldDelegate {
     var onApply: ((HotKeyConfig) -> Bool)?
     var onApplySnippetSummon: ((HotKeyConfig) -> Bool)?
-    var onSaveSnippet: (() -> Void)?
     var historyStore: HistoryStore?
     var snippetStore: SnippetStore?
 
@@ -413,13 +482,13 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTextFieldDel
 
         maxItemsStepper = NSStepper()
         maxItemsStepper.minValue = 10
-        maxItemsStepper.maxValue = 10000
+        maxItemsStepper.maxValue = 500
         maxItemsStepper.increment = 10
         maxItemsStepper.integerValue = historyStore?.maxItems ?? 100
         maxItemsStepper.target = self
         maxItemsStepper.action = #selector(stepperChanged)
 
-        let maxItemsHint = footnote("范围 10 – 10000")
+        let maxItemsHint = footnote("范围 10 – 500")
 
         let genGroup = makeGroup([
             formRow("保留历史条数", trailing: [maxItemsField, maxItemsStepper, maxItemsHint]),
@@ -431,7 +500,6 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTextFieldDel
         clearHistoryButton.contentTintColor = .systemRed
 
         let snippetActions = NSStackView(views: [
-            smallButton("保存片段…", #selector(saveSnippet)),
             smallButton("导入…", #selector(importSnippets)),
             smallButton("导出…", #selector(exportSnippets)),
         ])
@@ -608,11 +676,6 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTextFieldDel
         }
     }
 
-    @objc private func saveSnippet() {
-        setDataStatus(nil)
-        onSaveSnippet?()
-    }
-
     @objc private func importSnippets() {
         guard let store = snippetStore else { return }
         let panel = NSOpenPanel()
@@ -649,16 +712,20 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTextFieldDel
             default: return
             }
 
-            let summary = store.importItems(snippets, mode: mode)
-            switch mode {
-            case .merge:
-                var message = "导入完成：新增 \(summary.added) 条，更新 \(summary.updated) 条"
-                if summary.skipped > 0 { message += "，忽略重复 UUID \(summary.skipped) 条" }
-                self?.setDataStatus(message)
-            case .replace:
-                var message = "已用 \(summary.total) 条片段替换原有 \(summary.replaced) 条"
-                if summary.skipped > 0 { message += "，忽略重复 UUID \(summary.skipped) 条" }
-                self?.setDataStatus(message)
+            do {
+                let summary = try store.importItems(snippets, mode: mode)
+                switch mode {
+                case .merge:
+                    var message = "导入完成：新增 \(summary.added) 条，更新 \(summary.updated) 条"
+                    if summary.skipped > 0 { message += "，忽略重复项 \(summary.skipped) 条" }
+                    self?.setDataStatus(message)
+                case .replace:
+                    var message = "已用 \(summary.total) 条片段替换原有 \(summary.replaced) 条"
+                    if summary.skipped > 0 { message += "，忽略重复项 \(summary.skipped) 条" }
+                    self?.setDataStatus(message)
+                }
+            } catch {
+                self?.showDataError(title: "无法导入片段", error: error)
             }
         }
     }
@@ -694,7 +761,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTextFieldDel
 
     func controlTextDidEndEditing(_ obj: Notification) {
         guard let field = obj.object as? NSTextField, field === maxItemsField else { return }
-        let val = max(10, min(field.integerValue, 10000))
+        let val = max(10, min(field.integerValue, 500))
         maxItemsField.integerValue = val
         maxItemsStepper.integerValue = val
         historyStore?.maxItems = val

@@ -20,6 +20,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var historyHotKeyID: UInt32?
     private var snippetSummonHotKeyID: UInt32?
     private var snippetHotKeyIDs: [UUID: UInt32] = [:]
+    private var reportedDataIssues = Set<String>()
     private var currentConfig = HotKeyConfig.history
     private var currentSnippetSummonConfig = HotKeyConfig.snippet
     private let menuThumbnailCache: NSCache<NSString, NSImage> = {
@@ -46,27 +47,44 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         windowController = HistoryWindowController(store: store, monitor: monitor)
         snippetEditor = SnippetEditorWindowController(store: snippetStore)
+        windowController.onSaveAsSnippet = { [weak self] content in
+            self?.snippetEditor.showNew(content: content)
+        }
         snippetPicker = SnippetPickerWindowController(store: snippetStore, monitor: monitor)
         snippetPicker.onEdit = { [weak self] snip in self?.snippetEditor.showEdit(snip) }
+        snippetPicker.onError = { [weak self] message in self?.presentDataIssue(message) }
+
+        store.onPersistenceError = { [weak self] message in self?.presentDataIssue(message) }
+        snippetStore.onPersistenceError = { [weak self] message in self?.presentDataIssue(message) }
 
         NotificationCenter.default.addObserver(forName: .historyDidChange, object: nil, queue: .main) { [weak self] _ in
             self?.windowController.refreshIfVisible()
         }
         NotificationCenter.default.addObserver(forName: .snippetsDidChange, object: nil, queue: .main) { [weak self] _ in
-            self?.snippetPicker.refreshIfVisible()
             self?.reloadSnippetHotKeys()
         }
 
         settingsController = SettingsWindowController()
         settingsController.historyStore = store
         settingsController.snippetStore = snippetStore
-        settingsController.onApply = { [weak self] cfg in self?.applyHotKey(cfg) ?? false }
-        settingsController.onApplySnippetSummon = { [weak self] cfg in self?.applySnippetSummonHotKey(cfg) ?? false }
-        settingsController.onSaveSnippet = { [weak self] in self?.snippetEditor.show() }
-
+        settingsController.onApply = { [weak self] cfg in
+            guard let self else { return false }
+            let applied = self.applyHotKey(cfg)
+            self.reloadSnippetHotKeys()
+            return applied
+        }
+        settingsController.onApplySnippetSummon = { [weak self] cfg in
+            guard let self else { return false }
+            let applied = self.applySnippetSummonHotKey(cfg)
+            self.reloadSnippetHotKeys()
+            return applied
+        }
         applyHotKey(currentConfig)
         applySnippetSummonHotKey(currentSnippetSummonConfig)
         reloadSnippetHotKeys()
+
+        let startupIssues = [store.startupWarning, snippetStore.startupWarning].compactMap { $0 }
+        if !startupIssues.isEmpty { presentDataIssue(startupIssues.joined(separator: "\n\n")) }
 
         let menu = NSMenu()
         menu.delegate = self
@@ -121,6 +139,20 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                                         callback: { [weak self] in self?.emitSnippet(id: sid) }) {
                 snippetHotKeyIDs[sid] = token
             }
+        }
+        snippetPicker?.updateHotKeyRegistration(activeIDs: Set(snippetHotKeyIDs.keys))
+    }
+
+    private func presentDataIssue(_ message: String) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.reportedDataIssues.insert(message).inserted else { return }
+            let alert = NSAlert()
+            alert.messageText = "数据处理提示"
+            alert.informativeText = message
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "好")
+            NSApp.activate(ignoringOtherApps: true)
+            alert.runModal()
         }
     }
 
@@ -212,10 +244,19 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func makeSnippetItem(_ snip: Snippet) -> NSMenuItem {
         let name = snip.title.isEmpty ? "未命名" : snip.title
-        let label = snip.hotKey.map { "\(name)   \($0.display)" } ?? name
+        let label: String
+        if let hotKey = snip.hotKey {
+            let status = snippetHotKeyIDs[snip.id] == nil ? "\(hotKey.display)（冲突）" : hotKey.display
+            label = "\(name)   \(status)"
+        } else {
+            label = name
+        }
         let mi = NSMenuItem(title: label, action: #selector(pasteSnippet(_:)), keyEquivalent: "")
         mi.target = self
         mi.representedObject = snip.id.uuidString
+        if snip.hotKey != nil, snippetHotKeyIDs[snip.id] == nil {
+            mi.toolTip = "快捷键注册失败，请修改与其他快捷键冲突的组合"
+        }
         let kind = snippetKind(of: snip.content)
         mi.image = menuSymbol(kind.symbolName, tint: kind.color)
         return mi

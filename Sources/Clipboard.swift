@@ -178,7 +178,7 @@ enum AutoPaste {
         let target = pasteTarget(application)
         if isTrusted {
             if let target, !target.isActive {
-                target.activate(options: [.activateIgnoringOtherApps])
+                target.activate()
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
                 guard target?.isTerminated != true else { return }
@@ -225,7 +225,12 @@ enum AutoPaste {
     private static func showPermissionAlertIfNeeded() {
         guard !didPrompt else { return }
         didPrompt = true
-        DispatchQueue.main.async { showPermissionAlert() }
+        DispatchQueue.main.async {
+            let options = [
+                kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true
+            ] as CFDictionary
+            _ = AXIsProcessTrustedWithOptions(options)
+        }
     }
 
     private static func showSecureInputAlertIfNeeded() {
@@ -251,26 +256,6 @@ enum AutoPaste {
         }
     }
 
-    private static func showPermissionAlert() {
-        let a = NSAlert()
-        a.messageText = "需要辅助功能权限来「自动粘贴」"
-        a.informativeText = """
-            内容已写入剪贴板，可手动按 ⌘V 粘贴。
-            授权后回车将直接粘贴到当前 App。
-
-            授权步骤：
-              系统设置 → 隐私与安全性 → 辅助功能 → 勾选「粘贴历史」
-            授权后通常立即生效；若没生效，请退出再重新打开 粘贴历史。
-            """
-        a.addButton(withTitle: "打开系统设置")
-        a.addButton(withTitle: "稍后")
-        a.alertStyle = .informational
-        NSApp.activate(ignoringOtherApps: true)
-        if a.runModal() == .alertFirstButtonReturn,
-           let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
-            NSWorkspace.shared.open(url)
-        }
-    }
 }
 
 // MARK: - Launch at login (LaunchAgent)

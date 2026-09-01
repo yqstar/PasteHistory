@@ -58,6 +58,7 @@ final class PillView: NSView {
 // MARK: - Palette data
 
 struct PaletteRow {
+    var id: UUID
     var icon: NSImage?
     var iconIsTemplate: Bool = true
     var iconTint: NSColor? = nil
@@ -176,11 +177,13 @@ final class PaletteController: NSObject, NSTableViewDataSource, NSTableViewDeleg
                                NSTextFieldDelegate, NSWindowDelegate {
     var placeholder = "搜索…"
     var footerHints: [(cap: String, text: String)] = [("↩", "粘贴"), ("esc", "关闭")]
+    var separatesLastFooterHint = false
     var emptyText = "暂无内容"
     var provider: ((String) -> [PaletteRow])?
     var onActivate: ((Int) -> Bool)?
     var onDelete: ((Int) -> Void)?
     var onEditRow: ((Int) -> Void)?
+    var onSaveRow: ((Int) -> Void)?
 
     private var window: NSWindow!
     private var searchField: NSTextField!
@@ -231,7 +234,7 @@ final class PaletteController: NSObject, NSTableViewDataSource, NSTableViewDeleg
         previousApp = nil
         window?.orderOut(nil)
         if reactivatePreviousApplication, let prev, !prev.isTerminated {
-            prev.activate(options: [.activateIgnoringOtherApps])
+            prev.activate()
         } else if reactivatePreviousApplication {
             NSApp.hide(nil)
         }
@@ -241,14 +244,19 @@ final class PaletteController: NSObject, NSTableViewDataSource, NSTableViewDeleg
     func reloadIfVisible() { if isVisible { reload(preserveSelection: true) } }
 
     private func reload(preserveSelection: Bool = false) {
-        let prev = preserveSelection ? (tableView?.selectedRow ?? 0) : 0
+        let previousIndex = preserveSelection ? (tableView?.selectedRow ?? 0) : 0
+        let previousID: UUID? = {
+            guard preserveSelection, rows.indices.contains(previousIndex) else { return nil }
+            return rows[previousIndex].id
+        }()
         rows = provider?(query) ?? []
         tableView?.reloadData()
         let empty = rows.isEmpty
         emptyLabel?.isHidden = !empty
         scroll?.isHidden = empty
-        if !empty {
-            let idx = min(max(prev, 0), rows.count - 1)
+        if let idx = restoredSelectionIndex(previousID: previousID,
+                                            previousIndex: previousIndex,
+                                            newIDs: rows.map(\.id)) {
             tableView.selectRowIndexes(IndexSet(integer: idx), byExtendingSelection: false)
             tableView.scrollRowToVisible(idx)
         }
@@ -373,7 +381,16 @@ final class PaletteController: NSObject, NSTableViewDataSource, NSTableViewDeleg
     }
 
     private func buildFooter() -> NSView {
-        let groups: [NSView] = footerHints.map { hint in
+        var groups: [NSView] = []
+        for (index, hint) in footerHints.enumerated() {
+            if separatesLastFooterHint, index == footerHints.count - 1 {
+                let separator = NSBox()
+                separator.boxType = .separator
+                separator.translatesAutoresizingMaskIntoConstraints = false
+                separator.widthAnchor.constraint(equalToConstant: 1).isActive = true
+                separator.heightAnchor.constraint(equalToConstant: 18).isActive = true
+                groups.append(separator)
+            }
             let cap = PillView(text: hint.cap, font: .systemFont(ofSize: 11, weight: .medium),
                                textColor: .secondaryLabelColor, fill: .clear, stroke: .separatorColor)
             let lbl = NSTextField(labelWithString: hint.text)
@@ -383,7 +400,7 @@ final class PaletteController: NSObject, NSTableViewDataSource, NSTableViewDeleg
             s.orientation = .horizontal
             s.alignment = .centerY
             s.spacing = 5
-            return s
+            groups.append(s)
         }
         let footer = NSStackView(views: groups)
         footer.orientation = .horizontal
@@ -393,7 +410,8 @@ final class PaletteController: NSObject, NSTableViewDataSource, NSTableViewDeleg
     }
 
     private func installDeleteMonitor() {
-        guard deleteMonitor == nil, (onDelete != nil || onEditRow != nil) else { return }
+        guard deleteMonitor == nil,
+              (onDelete != nil || onEditRow != nil || onSaveRow != nil) else { return }
         deleteMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
             guard let self = self else { return e }
             let row = self.tableView.selectedRow
@@ -405,6 +423,11 @@ final class PaletteController: NSObject, NSTableViewDataSource, NSTableViewDeleg
             }
             if e.modifierFlags.contains(.command), e.charactersIgnoringModifiers == "e" {
                 self.onEditRow?(row)
+                return nil
+            }
+            let actionModifiers = e.modifierFlags.intersection([.command, .control, .option, .shift])
+            if actionModifiers == .command, Int(e.keyCode) == kVK_ANSI_S {
+                self.onSaveRow?(row)
                 return nil
             }
             return e

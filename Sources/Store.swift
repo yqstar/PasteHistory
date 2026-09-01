@@ -1,23 +1,99 @@
 import Foundation
+import Carbon.HIToolbox
+
+private enum JSONStorage {
+    static func backupURL(for url: URL) -> URL {
+        url.appendingPathExtension("bak")
+    }
+
+    static func load<T: Decodable>(_ type: T.Type, from url: URL,
+                                   decoder: JSONDecoder, label: String) -> (T?, String?) {
+        let fm = FileManager.default
+        let backup = backupURL(for: url)
+        guard fm.fileExists(atPath: url.path) else {
+            guard fm.fileExists(atPath: backup.path) else { return (nil, nil) }
+            do {
+                let data = try Data(contentsOf: backup)
+                let recovered = try decoder.decode(type, from: data)
+                try data.write(to: url, options: .atomic)
+                return (recovered, "\(label)主文件缺失，已从备份恢复")
+            } catch {
+                return (nil, "\(label)主文件缺失，且无法读取备份：\(error.localizedDescription)")
+            }
+        }
+        do {
+            return (try decoder.decode(type, from: Data(contentsOf: url)), nil)
+        } catch {
+            let originalError = error.localizedDescription
+            let quarantined = quarantine(url)
+            if fm.fileExists(atPath: backup.path),
+               let data = try? Data(contentsOf: backup),
+               let recovered = try? decoder.decode(type, from: data) {
+                do {
+                    try data.write(to: url, options: .atomic)
+                    let location = quarantined?.lastPathComponent ?? url.lastPathComponent
+                    return (recovered, "\(label)数据损坏，已从备份恢复；原文件保留为 \(location)")
+                } catch {
+                    return (recovered, "\(label)数据损坏，已读取备份但无法恢复主文件：\(error.localizedDescription)")
+                }
+            }
+            let location = quarantined?.lastPathComponent ?? url.lastPathComponent
+            return (nil, "无法读取\(label)数据（\(originalError)）；原文件保留为 \(location)")
+        }
+    }
+
+    static func write<T: Encodable>(_ value: T, to url: URL,
+                                    encoder: JSONEncoder) throws {
+        let fm = FileManager.default
+        let data = try encoder.encode(value)
+        if fm.fileExists(atPath: url.path) {
+            let previous = try Data(contentsOf: url)
+            try previous.write(to: backupURL(for: url), options: .atomic)
+        }
+        try data.write(to: url, options: .atomic)
+    }
+
+    private static func quarantine(_ url: URL) -> URL? {
+        let fm = FileManager.default
+        let stem = url.deletingPathExtension().lastPathComponent
+        let ext = url.pathExtension
+        let suffix = "\(Int(Date().timeIntervalSince1970))-\(UUID().uuidString.prefix(8))"
+        let name = ext.isEmpty ? "\(stem).corrupt-\(suffix)" : "\(stem).corrupt-\(suffix).\(ext)"
+        let destination = url.deletingLastPathComponent().appendingPathComponent(name)
+        do {
+            try fm.moveItem(at: url, to: destination)
+            return destination
+        } catch {
+            NSLog("[PasteHistory] unable to quarantine %@: %@", url.lastPathComponent,
+                  error.localizedDescription)
+            return nil
+        }
+    }
+}
 
 // MARK: - History store
 
 final class HistoryStore {
     private(set) var items: [ClipItem] = []
+    private(set) var startupWarning: String?
+    var onPersistenceError: ((String) -> Void)?
 
     private static let maxItemsKey = "maxHistoryItems"
     private static let defaultMaxItems = 100
+    private static let maximumMaxItems = 500
     private static let saveDelay: TimeInterval = 1.0
+    private let defaults: UserDefaults
 
     var maxItems: Int {
         get {
-            let v = UserDefaults.standard.integer(forKey: Self.maxItemsKey)
-            return v > 0 ? v : Self.defaultMaxItems
+            let value = defaults.integer(forKey: Self.maxItemsKey)
+            guard value > 0 else { return Self.defaultMaxItems }
+            return max(10, min(value, Self.maximumMaxItems))
         }
         set {
-            let clamped = max(10, min(newValue, 10000))
-            guard clamped != maxItems else { return }
-            UserDefaults.standard.set(clamped, forKey: Self.maxItemsKey)
+            let clamped = max(10, min(newValue, Self.maximumMaxItems))
+            guard clamped != defaults.integer(forKey: Self.maxItemsKey) else { return }
+            defaults.set(clamped, forKey: Self.maxItemsKey)
             if trim() {
                 scheduleSave()
                 notifyChange()
@@ -32,26 +108,31 @@ final class HistoryStore {
     private let ioQueue = DispatchQueue(label: "com.local.pastehistory.history-store",
                                         qos: .utility)
 
-    init() {
+    init(baseDir customBaseDir: URL? = nil, defaults: UserDefaults = .standard) {
+        self.defaults = defaults
         let appSup = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        baseDir = appSup.appendingPathComponent("PasteHistory", isDirectory: true)
+        baseDir = customBaseDir ?? appSup.appendingPathComponent("PasteHistory", isDirectory: true)
         imagesDir = baseDir.appendingPathComponent("images", isDirectory: true)
         dbURL = baseDir.appendingPathComponent("history.json")
-        try? FileManager.default.createDirectory(at: imagesDir, withIntermediateDirectories: true)
+        do {
+            try FileManager.default.createDirectory(at: imagesDir, withIntermediateDirectories: true)
+        } catch {
+            startupWarning = "无法创建历史数据目录：\(error.localizedDescription)"
+        }
         load()
     }
 
     private func load() {
-        guard FileManager.default.fileExists(atPath: dbURL.path) else { return }
         let dec = JSONDecoder()
         dec.dateDecodingStrategy = .iso8601
-        do {
-            let data = try Data(contentsOf: dbURL)
-            items = try dec.decode([ClipItem].self, from: data)
-            if trim() { save() }
-        } catch {
-            NSLog("[PasteHistory] history load failed: %@", error.localizedDescription)
+        let result = JSONStorage.load([ClipItem].self, from: dbURL,
+                                      decoder: dec, label: "历史记录")
+        if let loaded = result.0 { items = loaded }
+        if let warning = result.1 {
+            startupWarning = [startupWarning, warning].compactMap { $0 }.joined(separator: "\n")
+            NSLog("[PasteHistory] %@", warning)
         }
+        if trim() { save() }
     }
 
     func save() {
@@ -59,8 +140,12 @@ final class HistoryStore {
         pendingSave = nil
         let snapshot = items
         let destination = dbURL
-        ioQueue.async {
-            Self.write(snapshot, to: destination, label: "history")
+        ioQueue.async { [weak self] in
+            do {
+                try Self.write(snapshot, to: destination)
+            } catch {
+                self?.reportPersistenceError("无法保存历史记录：\(error.localizedDescription)")
+            }
         }
     }
 
@@ -70,20 +155,19 @@ final class HistoryStore {
         let snapshot = items
         let destination = dbURL
         ioQueue.sync {
-            Self.write(snapshot, to: destination, label: "history")
+            do {
+                try Self.write(snapshot, to: destination)
+            } catch {
+                NSLog("[PasteHistory] history flush failed: %@", error.localizedDescription)
+            }
         }
     }
 
-    private static func write<T: Encodable>(_ value: T, to url: URL, label: String) {
+    private static func write<T: Encodable>(_ value: T, to url: URL) throws {
         let enc = JSONEncoder()
         enc.outputFormatting = [.prettyPrinted, .sortedKeys]
         enc.dateEncodingStrategy = .iso8601
-        do {
-            let data = try enc.encode(value)
-            try data.write(to: url, options: .atomic)
-        } catch {
-            NSLog("[PasteHistory] %@ save failed: %@", label, error.localizedDescription)
-        }
+        try JSONStorage.write(value, to: url, encoder: enc)
     }
 
     private func scheduleSave() {
@@ -151,6 +235,11 @@ final class HistoryStore {
     private func notifyChange() {
         NotificationCenter.default.post(name: .historyDidChange, object: self)
     }
+
+    private func reportPersistenceError(_ message: String) {
+        NSLog("[PasteHistory] %@", message)
+        DispatchQueue.main.async { [weak self] in self?.onPersistenceError?(message) }
+    }
 }
 
 // MARK: - Snippet store
@@ -159,6 +248,37 @@ final class SnippetStore {
     enum ImportMode {
         case merge
         case replace
+    }
+
+    enum AddResult {
+        case added(Snippet)
+        case duplicate(Snippet)
+    }
+
+    enum StoreError: LocalizedError {
+        case emptyContent
+        case duplicateContent(Snippet)
+        case invalidHotKey(String)
+        case duplicateHotKey(String)
+        case emptyImport
+        case persistence(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .emptyContent:
+                return "片段正文不能为空"
+            case .duplicateContent(let existing):
+                return "相同正文已存在于片段“\(existing.title)”"
+            case .invalidHotKey(let title):
+                return "片段“\(title)”包含无效快捷键"
+            case .duplicateHotKey(let display):
+                return "导入数据中存在重复快捷键 \(display)"
+            case .emptyImport:
+                return "导入文件中没有片段"
+            case .persistence(let message):
+                return message
+            }
+        }
     }
 
     struct ImportSummary {
@@ -170,6 +290,9 @@ final class SnippetStore {
     }
 
     private(set) var items: [Snippet] = []
+    private(set) var startupWarning: String?
+    var onPersistenceError: ((String) -> Void)?
+
     private static let saveDelay: TimeInterval = 0.5
     private let url: URL
     private var pendingSave: DispatchWorkItem?
@@ -178,26 +301,35 @@ final class SnippetStore {
 
     init(baseDir: URL) {
         url = baseDir.appendingPathComponent("snippets.json")
+        do {
+            try FileManager.default.createDirectory(at: baseDir, withIntermediateDirectories: true)
+        } catch {
+            startupWarning = "无法创建片段数据目录：\(error.localizedDescription)"
+        }
         load()
     }
 
     private func load() {
-        guard FileManager.default.fileExists(atPath: url.path) else { return }
-        do {
-            let data = try Data(contentsOf: url)
-            items = try JSONDecoder().decode([Snippet].self, from: data)
-        } catch {
-            NSLog("[PasteHistory] snippet load failed: %@", error.localizedDescription)
+        let result = JSONStorage.load([Snippet].self, from: url,
+                                      decoder: JSONDecoder(), label: "片段")
+        if let loaded = result.0 { items = loaded }
+        if let warning = result.1 {
+            startupWarning = [startupWarning, warning].compactMap { $0 }.joined(separator: "\n")
+            NSLog("[PasteHistory] %@", warning)
         }
     }
 
-    func save() {
+    private func save() {
         pendingSave?.cancel()
         pendingSave = nil
         let snapshot = items
         let destination = url
-        ioQueue.async {
-            Self.write(snapshot, to: destination)
+        ioQueue.async { [weak self] in
+            do {
+                try Self.write(snapshot, to: destination)
+            } catch {
+                self?.reportPersistenceError("无法保存片段：\(error.localizedDescription)")
+            }
         }
     }
 
@@ -207,17 +339,16 @@ final class SnippetStore {
         let snapshot = items
         let destination = url
         ioQueue.sync {
-            Self.write(snapshot, to: destination)
+            do {
+                try Self.write(snapshot, to: destination)
+            } catch {
+                NSLog("[PasteHistory] snippet flush failed: %@", error.localizedDescription)
+            }
         }
     }
 
-    private static func write(_ snippets: [Snippet], to url: URL) {
-        do {
-            let data = try encoder().encode(snippets)
-            try data.write(to: url, options: .atomic)
-        } catch {
-            NSLog("[PasteHistory] snippet save failed: %@", error.localizedDescription)
-        }
+    private static func write(_ snippets: [Snippet], to url: URL) throws {
+        try JSONStorage.write(snippets, to: url, encoder: encoder())
     }
 
     private static func encoder() -> JSONEncoder {
@@ -233,6 +364,36 @@ final class SnippetStore {
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.saveDelay, execute: work)
     }
 
+    private func commit(_ newItems: [Snippet]) throws {
+        pendingSave?.cancel()
+        pendingSave = nil
+        do {
+            try ioQueue.sync { try Self.write(newItems, to: url) }
+        } catch {
+            throw StoreError.persistence("无法保存片段：\(error.localizedDescription)")
+        }
+        items = newItems
+        NotificationCenter.default.post(name: .snippetsDidChange, object: self)
+    }
+
+    private static func normalized(_ snippet: Snippet, validateHotKey: Bool = false) throws -> Snippet {
+        guard !snippet.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw StoreError.emptyContent
+        }
+        var result = snippet
+        let title = result.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        result.title = title.isEmpty ? "未命名" : title
+        if validateHotKey, let hotKey = result.hotKey {
+            let required = UInt32(cmdKey | optionKey | controlKey)
+            guard hotKey.keyCode <= 127,
+                  hotKey.carbonModifiers & required != 0,
+                  !hotKey.display.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw StoreError.invalidHotKey(result.title)
+            }
+        }
+        return result
+    }
+
     func decodeImportData(_ data: Data) throws -> [Snippet] {
         try JSONDecoder().decode([Snippet].self, from: data)
     }
@@ -242,60 +403,99 @@ final class SnippetStore {
     }
 
     @discardableResult
-    func importItems(_ imported: [Snippet], mode: ImportMode) -> ImportSummary {
-        var seen = Set<UUID>()
-        let unique = imported.filter { seen.insert($0.id).inserted }
-        let skipped = imported.count - unique.count
-        let previousCount = items.count
+    func importItems(_ imported: [Snippet], mode: ImportMode) throws -> ImportSummary {
+        guard !imported.isEmpty else { throw StoreError.emptyImport }
 
+        var seenIDs = Set<UUID>()
+        var seenContents = Set<String>()
+        var seenHotKeys = Set<String>()
+        var unique: [Snippet] = []
+        var skipped = 0
+
+        for raw in imported {
+            let snippet = try Self.normalized(raw, validateHotKey: true)
+            guard seenIDs.insert(snippet.id).inserted,
+                  seenContents.insert(snippet.content).inserted else {
+                skipped += 1
+                continue
+            }
+            if let hotKey = snippet.hotKey {
+                let identity = "\(hotKey.keyCode):\(hotKey.carbonModifiers)"
+                guard seenHotKeys.insert(identity).inserted else {
+                    throw StoreError.duplicateHotKey(hotKey.display)
+                }
+            }
+            unique.append(snippet)
+        }
+
+        let previousCount = items.count
+        let newItems: [Snippet]
         let summary: ImportSummary
         switch mode {
         case .merge:
             let existingIDs = Set(items.map(\.id))
-            let importedIDs = Set(unique.map(\.id))
-            let added = unique.lazy.filter { !existingIDs.contains($0.id) }.count
-            let updated = unique.count - added
-            items = unique + items.filter { !importedIDs.contains($0.id) }
-            summary = ImportSummary(total: items.count, added: added, updated: updated,
+            let existingContentOwners = Dictionary(items.map { ($0.content, $0.id) },
+                                                   uniquingKeysWith: { first, _ in first })
+            var accepted: [Snippet] = []
+            for snippet in unique {
+                if let owner = existingContentOwners[snippet.content], owner != snippet.id {
+                    skipped += 1
+                } else {
+                    accepted.append(snippet)
+                }
+            }
+            let importedIDs = Set(accepted.map(\.id))
+            let added = accepted.lazy.filter { !existingIDs.contains($0.id) }.count
+            let updated = accepted.count - added
+            newItems = accepted + items.filter { !importedIDs.contains($0.id) }
+            summary = ImportSummary(total: newItems.count, added: added, updated: updated,
                                     skipped: skipped, replaced: 0)
         case .replace:
-            items = unique
-            summary = ImportSummary(total: items.count, added: items.count, updated: 0,
+            newItems = unique
+            summary = ImportSummary(total: newItems.count, added: newItems.count, updated: 0,
                                     skipped: skipped, replaced: previousCount)
         }
 
-        save()
-        NotificationCenter.default.post(name: .snippetsDidChange, object: self)
+        if newItems != items { try commit(newItems) }
         return summary
     }
 
     @discardableResult
-    func add(title: String = "新片段", content: String = "") -> Snippet {
-        let s = Snippet(id: UUID(), title: title, content: content)
-        items.insert(s, at: 0)
-        save()
-        NotificationCenter.default.post(name: .snippetsDidChange, object: self)
-        return s
+    func add(title: String = "新片段", content: String) throws -> AddResult {
+        let snippet = try Self.normalized(Snippet(id: UUID(), title: title, content: content))
+        if let existing = items.first(where: { $0.content == snippet.content }) {
+            return .duplicate(existing)
+        }
+        try commit([snippet] + items)
+        return .added(snippet)
     }
 
-    func update(_ snippet: Snippet) {
-        guard let i = items.firstIndex(where: { $0.id == snippet.id }) else { return }
-        items.remove(at: i)
-        items.insert(snippet, at: 0)
-        save()
-        NotificationCenter.default.post(name: .snippetsDidChange, object: self)
+    func update(_ snippet: Snippet) throws {
+        guard let index = items.firstIndex(where: { $0.id == snippet.id }) else { return }
+        let normalized = try Self.normalized(snippet)
+        if let existing = items.first(where: { $0.id != normalized.id && $0.content == normalized.content }) {
+            throw StoreError.duplicateContent(existing)
+        }
+        var newItems = items
+        newItems.remove(at: index)
+        newItems.insert(normalized, at: 0)
+        try commit(newItems)
     }
 
     func bump(id: UUID) {
-        guard let i = items.firstIndex(where: { $0.id == id }), i != 0 else { return }
-        let snippet = items.remove(at: i)
+        guard let index = items.firstIndex(where: { $0.id == id }), index != 0 else { return }
+        let snippet = items.remove(at: index)
         items.insert(snippet, at: 0)
         scheduleSave()
     }
 
-    func delete(id: UUID) {
-        items.removeAll { $0.id == id }
-        save()
-        NotificationCenter.default.post(name: .snippetsDidChange, object: self)
+    func delete(id: UUID) throws {
+        guard items.contains(where: { $0.id == id }) else { return }
+        try commit(items.filter { $0.id != id })
+    }
+
+    private func reportPersistenceError(_ message: String) {
+        NSLog("[PasteHistory] %@", message)
+        DispatchQueue.main.async { [weak self] in self?.onPersistenceError?(message) }
     }
 }
