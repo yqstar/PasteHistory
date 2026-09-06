@@ -18,6 +18,7 @@ cp "$DIR/Info.plist" "$APP/Contents/Info.plist"
 
 echo "==> Copying app icon"
 cp "$DIR/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
+cp "$DIR/CHANGELOG.md" "$APP/Contents/Resources/CHANGELOG.md"
 
 for ARCH in "${ARCHS[@]}"; do
     echo "==> Compiling Swift ($ARCH, macOS $MIN_MACOS+)"

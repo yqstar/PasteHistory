@@ -218,6 +218,118 @@ private func testSearchAndPreview() {
     check(oneLinePreview("a\r\nb\tc", limit: 20) == "a b c", "摘要应统一处理换行和制表符")
 }
 
+private func testUpdates() throws {
+    check(AppVersion("1.0") == AppVersion("v1.0.0"), "旧版 1.0 与发布标签 v1.0.0 应等价")
+    check(AppVersion("1.10.0")! > AppVersion("1.9.9")!, "版本号应按数值比较，不能按字符串排序")
+    check(AppVersion("2.0.0")! > AppVersion("1.99.99")!, "主版本升级优先于次版本与补丁")
+    for invalid in ["", "v", "1", "1..0", "1.0.0.1", "1.0.0-beta.1", "-1.0.0", "01.0.0", "１.0.0", String(repeating: "9", count: 50) + ".0.0"] {
+        check(AppVersion(invalid) == nil, "拒绝不支持的版本号：\(invalid)")
+    }
+
+    let download = "https://github.com/yqstar/PasteHistory/releases/download/v1.10.0/PasteHistory-1.10.0-universal.dmg"
+    var payload: [String: Any] = [
+        "tag_name": "v1.10.0", "html_url": "https://github.com/yqstar/PasteHistory/releases/tag/v1.10.0",
+        "draft": false, "prerelease": false, "body": "## 改进\n- 更新功能",
+        "assets": [["name": "PasteHistory-1.10.0-universal.dmg", "state": "uploaded", "size": 2048,
+                    "browser_download_url": download]],
+    ]
+    func parse(_ payload: [String: Any], status: Int = 200) throws -> PublishedRelease {
+        let response = HTTPURLResponse(url: AppReleaseInfo.latestAPIURL, statusCode: status,
+                                       httpVersion: "HTTP/1.1", headerFields: nil)!
+        return try GitHubReleaseChecker.parse(data: JSONSerialization.data(withJSONObject: payload), response: response)
+    }
+    let release = try parse(payload)
+    check(release.version == AppVersion("1.10.0") && release.notes.contains("更新功能"), "解析正式版本与中文更新说明")
+    check(release.downloadURL?.absoluteString == download, "选取当前版本的 Universal DMG")
+    for code in [403, 404, 429, 500] {
+        do {
+            _ = try parse(payload, status: code)
+            check(false, "HTTP \(code) 不得显示检查成功")
+        } catch let error as UpdateCheckError {
+            switch (code, error) {
+            case (403, .rateLimited), (429, .rateLimited), (404, .noRelease), (500, .server(500)): break
+            default: check(false, "HTTP \(code) 应显示对应错误原因")
+            }
+        }
+    }
+    for key in ["draft", "prerelease"] {
+        var invalid = payload
+        invalid[key] = true
+        do { _ = try parse(invalid); check(false, "不得提示草稿或预发布版本") }
+        catch UpdateCheckError.invalidResponse { }
+    }
+    for url in ["http://github.com/yqstar/PasteHistory/releases/tag/v1.10.0",
+                "https://example.com/yqstar/PasteHistory/releases/tag/v1.10.0",
+                "https://github.com/another/project/releases/tag/v1.10.0",
+                "https://github.com/yqstar/PasteHistory/releases/tag/v9.9.9"] {
+        var invalid = payload
+        invalid["html_url"] = url
+        do { _ = try parse(invalid); check(false, "拒绝非本项目或标签不符的发布地址") }
+        catch UpdateCheckError.invalidResponse { }
+    }
+    payload["body"] = NSNull()
+    payload["assets"] = []
+    let missing = try parse(payload)
+    check(missing.downloadURL == nil && !missing.notes.isEmpty, "缺少安装包或说明时提供发布页面回退")
+    for url in ["https://example.com/package.dmg", download.replacingOccurrences(of: "v1.10.0/", with: "v1.9.0/")] {
+        payload["assets"] = [["name": "PasteHistory-1.10.0-universal.dmg", "state": "uploaded", "size": 2048,
+                              "browser_download_url": url]]
+        let unsafeAsset = try parse(payload)
+        check(unsafeAsset.downloadURL == nil, "忽略来源或版本不符的安装包地址")
+    }
+    let badResponse = HTTPURLResponse(url: AppReleaseInfo.latestAPIURL, statusCode: 200, httpVersion: nil, headerFields: nil)!
+    do {
+        _ = try GitHubReleaseChecker.parse(data: Data("<html>error</html>".utf8), response: badResponse)
+        check(false, "无效 JSON 不得判为最新版本")
+    } catch UpdateCheckError.invalidResponse { }
+}
+
+private final class UpdateStubProtocol: URLProtocol {
+    static var failure: Error?
+    static var observedRequest: URLRequest?
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        Self.observedRequest = request
+        if let failure = Self.failure {
+            client?.urlProtocol(self, didFailWithError: failure)
+            return
+        }
+        let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(#"{"tag_name":"v1.0.3","html_url":"https://github.com/yqstar/PasteHistory/releases/tag/v1.0.3","draft":false,"prerelease":false,"assets":[]}"#.utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() { }
+}
+
+private func testUpdateTransport() {
+    let config = URLSessionConfiguration.ephemeral
+    config.protocolClasses = [UpdateStubProtocol.self]
+    let session = URLSession(configuration: config)
+    defer { session.invalidateAndCancel() }
+    let checker = GitHubReleaseChecker(session: session)
+    for offline in [false, true] {
+        UpdateStubProtocol.failure = offline ? URLError(.notConnectedToInternet) : nil
+        var completed = false
+        checker.fetchLatest { result in
+            check(Thread.isMainThread, "网络结果应在主线程更新界面")
+            switch result {
+            case .success(let release): check(!offline && release.version == AppVersion("1.0.3"), "网络响应传递正式版本")
+            case .failure(let error): check(offline && error is UpdateCheckError, "断网应显示可重试的网络错误")
+            }
+            completed = true
+        }
+        let deadline = Date().addingTimeInterval(3)
+        while !completed && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }
+        check(completed, "检查更新请求必须回调")
+    }
+    let request = UpdateStubProtocol.observedRequest
+    check(request?.url == AppReleaseInfo.latestAPIURL && request?.httpMethod == "GET", "只请求公开的最新正式版本接口")
+    check(request?.httpBody == nil && request?.value(forHTTPHeaderField: "Authorization") == nil,
+          "更新请求不携带剪贴板内容或授权凭据")
+}
+
 do {
     testSelectionRestoration()
     try testHistoryLimits()
@@ -226,6 +338,8 @@ do {
     try testSavingRemovedSnippet()
     try testCoalescedPersistence()
     testSearchAndPreview()
+    try testUpdates()
+    testUpdateTransport()
 } catch {
     failureCount += 1
     print("FAIL: 未预期错误：\(error)")

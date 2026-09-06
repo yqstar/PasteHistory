@@ -57,6 +57,82 @@ private func snapshot(_ window: NSWindow, _ name: String) throws {
     try bitmap.representation(using: .png, properties: [:])?.write(to: url)
 }
 
+private final class StubReleaseChecker: ReleaseChecking {
+    var calls = 0
+    var completion: ((Result<PublishedRelease, Error>) -> Void)?
+    func fetchLatest(completion: @escaping (Result<PublishedRelease, Error>) -> Void) {
+        calls += 1
+        self.completion = completion
+    }
+}
+
+private func testUpdateWindow() throws {
+    let checker = StubReleaseChecker()
+    var openedURLs: [URL] = []
+    let notesURL = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        .deletingLastPathComponent().appendingPathComponent("CHANGELOG.md")
+    let controller = UpdateWindowController(checker: checker, currentVersion: "1.0.4", buildNumber: "12",
+                                            localNotes: try String(contentsOf: notesURL, encoding: .utf8),
+                                            openURL: { openedURLs.append($0); return true })
+    controller.show()
+    pump()
+    let window = NSApp.windows.first { $0.title == "版本与更新" }!
+    let views = descendants(window.contentView!)
+    let text = views.compactMap { $0 as? NSTextView }.first!
+    let tabs = views.compactMap { $0 as? NSSegmentedControl }.first!
+    func contains(_ title: String) -> Bool {
+        descendants(window.contentView!).compactMap { $0 as? NSTextField }.contains { $0.stringValue == title }
+    }
+    check(checker.calls == 0 && text.string.contains("1.0.4"), "打开本地版本记录不发起网络请求")
+    check(text.visibleRect.minX == 0 && text.visibleRect.minY == 0, "版本记录初次显示时应从左上角开始，不裁切文本")
+    try snapshot(window, "updates-local-light")
+    controller.show(checkForUpdates: true)
+    controller.show(checkForUpdates: true)
+    check(checker.calls == 1 && buttons(window, title: "检查更新").first?.isEnabled == false,
+          "检查过程中禁用按钮，重复操作不会并发请求")
+    let payload = ###"{"tag_name":"v1.10.0","html_url":"https://github.com/yqstar/PasteHistory/releases/tag/v1.10.0","body":"## 本次更新\n- 改善版本管理\n- 修复问题","draft":false,"prerelease":false,"assets":[{"name":"PasteHistory-1.10.0-universal.dmg","state":"uploaded","size":2048,"browser_download_url":"https://github.com/yqstar/PasteHistory/releases/download/v1.10.0/PasteHistory-1.10.0-universal.dmg"}]}"###
+    func release(_ version: String) throws -> PublishedRelease {
+        try JSONDecoder().decode(PublishedRelease.self, from: Data(payload.replacingOccurrences(of: "1.10.0", with: version).utf8))
+    }
+    checker.completion?(.success(try release("1.10.0")))
+    pump()
+    check(contains("发现新版本 1.10.0") && tabs.selectedSegment == 1 && text.string.contains("本次更新"),
+          "新版显示正确版本号并自动展示发布说明")
+    click(window, "下载新版…")
+    check(openedURLs.last?.lastPathComponent == "PasteHistory-1.10.0-universal.dmg", "下载按钮打开对应的 Universal DMG")
+    click(window, "发布页面 ↗")
+    check(openedURLs.last?.path.hasSuffix("/tag/v1.10.0") == true, "发布页面打开当前检查到的版本")
+    try snapshot(window, "updates-available-light")
+    window.appearance = NSAppearance(named: .darkAqua)
+    window.setContentSize(NSSize(width: 540, height: 500))
+    pump()
+    try snapshot(window, "updates-available-dark-small")
+    let visibleButtons = descendants(window.contentView!).compactMap { $0 as? NSButton }.filter { !$0.isHiddenOrHasHiddenAncestor }
+    check(visibleButtons.allSatisfy { window.contentView!.bounds.contains($0.convert($0.bounds, to: window.contentView!)) },
+          "最小窗口下更新操作按钮均在可视范围内")
+    check(text.frame.width <= text.enclosingScrollView!.contentSize.width + 1 && text.visibleRect.minX == 0,
+          "缩小窗口后版本说明仍按可视宽度换行，不发生横向裁切")
+    controller.show()
+    check(tabs.selectedSegment == 0 && text.string.contains("1.0.3"), "版本记录入口始终可以回到本地历史")
+
+    for (version, expected) in [("1.0.4", "已是最新版本"), ("1.0.3", "当前版本领先于公开发布")] {
+        controller.show(checkForUpdates: true)
+        checker.completion?(.success(try release(version)))
+        check(contains(expected) && buttons(window, title: "下载新版…").isEmpty, "\(expected)时不提供降级下载")
+    }
+    controller.show(checkForUpdates: true)
+    checker.completion?(.failure(UpdateCheckError.network))
+    pump()
+    check(contains("检查更新失败") && buttons(window, title: "重新检查").first?.isEnabled == true,
+          "网络失败后可重试，且清除过期下载入口")
+    try snapshot(window, "updates-network-error-dark")
+    window.performClose(nil)
+    controller.show(checkForUpdates: true)
+    check(window.isVisible && checker.calls == 5, "关闭后可重新打开并检查更新")
+    checker.completion?(.failure(UpdateCheckError.rateLimited))
+    window.performClose(nil)
+}
+
 private func testClipboardAndThumbnails(in directory: URL, defaults: UserDefaults) throws {
     let history = HistoryStore(baseDir: directory.appendingPathComponent("clipboard"), defaults: defaults)
     let pasteboard = NSPasteboard.withUniqueName()
@@ -285,6 +361,7 @@ private func runTests() throws {
     settingsWindow.performClose(nil)
     pump()
     check(recorders.allSatisfy { $0.title != "按下组合键…" }, "关闭设置会停止快捷键录制")
+    try testUpdateWindow()
 }
 
 setbuf(stdout, nil)
@@ -297,7 +374,10 @@ let inputMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp,
     event.type == .keyDown && event.timestamp == scriptedKeyTimestamp ? event : nil
 }
 DispatchQueue.main.async {
-    do { try runTests() }
+    do {
+        if CommandLine.arguments.contains("--updates-only") { try testUpdateWindow() }
+        else { try runTests() }
+    }
     catch { failures += 1; print("FAIL: \(error)") }
     print(failures == 0 ? "PASS: 片段界面回归全部通过" : "FAIL: 共 \(failures) 项失败")
     if let inputMonitor { NSEvent.removeMonitor(inputMonitor) }

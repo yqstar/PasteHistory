@@ -6,7 +6,7 @@
 ![macOS 13+](https://img.shields.io/badge/macOS-13%2B-black)
 ![Universal](https://img.shields.io/badge/arch-Apple%20Silicon%20%7C%20Intel-blue)
 
-[下载最新版本](https://github.com/yqstar/PasteHistory/releases/latest) · [从源码构建](#从源码构建) · [查看全部 Releases](https://github.com/yqstar/PasteHistory/releases)
+[下载最新版本](https://github.com/yqstar/PasteHistory/releases/latest) · [从源码构建](#从源码构建) · [版本记录](CHANGELOG.md) · [查看全部 Releases](https://github.com/yqstar/PasteHistory/releases)
 
 ## 界面预览
 
@@ -76,7 +76,8 @@ open build/PasteHistory.app
 - **片段管理**：可直接新建片段、从历史保存，或通过 JSON 导入、导出；空正文和重复正文不会重复保存，导入时可按 UUID 合并或替换全部。
 - **可配置设置**：自定义两个选择器的全局快捷键、历史保留条数和开机自启动。
 - **统一的原生界面**：适配浅色与深色模式，清晰区分选中项、内容类型和不可用操作；选择器、编辑器与设置窗口均可调整大小。
-- **本地持久化**：所有数据保存在 `~/Library/Application Support/PasteHistory/`，应用不联网。
+- **版本与更新**：可离线查看版本记录，手动检查 GitHub 上的最新正式版本，并打开新版安装包下载。
+- **本地持久化**：所有剪贴板与片段数据保存在 `~/Library/Application Support/PasteHistory/`，不会上传；仅手动检查更新时请求 GitHub，打开发布页面或下载安装包时由浏览器联网。
 
 ## 使用方法
 
@@ -139,6 +140,17 @@ open build/PasteHistory.app
   </picture>
 </p>
 
+## 版本记录与检查更新
+
+打开“菜单栏 → 设置… → 版本与更新”，选择“版本记录…”可查看当前版本、构建号和随安装包附带的中文更新记录，无需联网。选择“检查更新…”会查询 GitHub 最新正式 Release。
+
+- 发现新版时展示发布说明，点击“下载新版…”在浏览器中下载 Universal DMG；如果安装包暂未上传，可点击“发布页面”。
+- 下载后退出 PasteHistory，将新版拖入“应用程序”替换，再重新启动，原有历史和片段保留。
+- 网络不可用或检查频率受限时会显示原因，可以重新检查或通过“全部发布”打开 GitHub。
+- 检查不会后台定时运行，也不会自动安装；请求不包含剪贴板、片段或设备标识。
+
+完整源码版本记录见 [CHANGELOG.md](CHANGELOG.md)。
+
 ## 权限说明
 
 监听系统剪贴板本身不需要额外权限。自动粘贴通过模拟 `⌘V` 完成，需要在以下位置允许“粘贴历史”使用辅助功能：
@@ -197,13 +209,13 @@ open build/PasteHistory.app
 2. 构建 Apple Silicon 与 Intel 双架构应用。
 3. 校验应用签名与 DMG。
 4. 生成带版本号的 Universal DMG 和 SHA-256 文件。
-5. 创建 GitHub Release 并自动生成更新说明。
+5. 从 `CHANGELOG.md` 提取对应版本的中文说明，并附加 GitHub 自动生成的变更链接后创建 Release。
 
-发布示例：
+发布前，将 `Info.plist` 中的版本号更新为目标版本，并在 `CHANGELOG.md` 最上方添加该版本的记录与发布日期。工作流会校验标签和应用版本一致、对应说明非空。发布示例：
 
 ```bash
-git tag -a v1.0.1 -m "PasteHistory v1.0.1"
-git push origin v1.0.1
+git tag -a v1.0.4 -m "PasteHistory v1.0.4"
+git push origin v1.0.4
 ```
 
 ## 说明

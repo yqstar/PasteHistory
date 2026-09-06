@@ -510,6 +510,8 @@ final class SnippetEditorWindowController: NSObject, NSWindowDelegate, NSTextVie
 final class SettingsWindowController: NSObject, NSWindowDelegate, NSTextFieldDelegate {
     var onApply: ((HotKeyConfig) -> Bool)?
     var onApplySnippetSummon: ((HotKeyConfig) -> Bool)?
+    var onShowVersions: (() -> Void)?
+    var onCheckUpdates: (() -> Void)?
     var historyStore: HistoryStore?
     var snippetStore: SnippetStore?
 
@@ -586,7 +588,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTextFieldDel
         let appIcon = UIStyle.symbol("doc.on.clipboard", size: 28, color: .controlAccentColor)
         appIcon.widthAnchor.constraint(equalToConstant: 36).isActive = true
         let appTitle = UIStyle.label("PasteHistory", size: 18, weight: .semibold)
-        let appDetail = UIStyle.label("快捷访问与本地数据", size: 12, color: .secondaryLabelColor)
+        let appDetail = UIStyle.label("版本 \(AppReleaseInfo.version) · 快捷访问与本地数据", size: 12, color: .secondaryLabelColor)
         let appText = NSStackView(views: [appTitle, appDetail])
         appText.orientation = .vertical
         appText.alignment = .leading
@@ -666,13 +668,22 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTextFieldDel
         dataStatusLabel = footnote("")
         dataStatusLabel.isHidden = true
 
+        let versionActions = NSStackView(views: [
+            smallButton("版本记录…", #selector(showVersions)),
+            smallButton("检查更新…", #selector(checkUpdates)),
+        ])
+        versionActions.spacing = 8
+        let versionGroup = makeGroup([
+            formRow("版本与更新", detail: "手动检查 GitHub 上的正式版本", symbol: "arrow.down.circle", trailing: [versionActions]),
+        ])
+
         let hkTitle = sectionLabel("快捷键")
         let genTitle = sectionLabel("通用")
         let dataTitle = sectionLabel("数据管理")
 
         let stack = NSStackView(views: [header, genTitle, genGroup,
                                         hkTitle, hkGroup, hkHelp,
-                                        dataTitle, dataGroup, dataStatusLabel])
+                                        dataTitle, dataGroup, dataStatusLabel, versionGroup])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 6
@@ -684,7 +695,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTextFieldDel
         stack.setCustomSpacing(10, after: hkGroup)
         stack.setCustomSpacing(20, after: hkHelp)
         stack.setCustomSpacing(8, after: dataTitle)
-        stack.setCustomSpacing(4, after: dataGroup)
+        stack.setCustomSpacing(16, after: dataGroup)
 
         document.addSubview(stack)
         NSLayoutConstraint.activate([
@@ -695,6 +706,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTextFieldDel
             hkGroup.widthAnchor.constraint(equalTo: stack.widthAnchor),
             genGroup.widthAnchor.constraint(equalTo: stack.widthAnchor),
             dataGroup.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            versionGroup.widthAnchor.constraint(equalTo: stack.widthAnchor),
             hkHelp.widthAnchor.constraint(equalTo: stack.widthAnchor),
             hkHint.widthAnchor.constraint(equalTo: hkHelp.widthAnchor),
             statusLabel.widthAnchor.constraint(equalTo: hkHelp.widthAnchor),
@@ -765,6 +777,9 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTextFieldDel
         b.setContentCompressionResistancePriority(.required, for: .horizontal)
         return b
     }
+
+    @objc private func showVersions() { onShowVersions?() }
+    @objc private func checkUpdates() { onCheckUpdates?() }
 
     @objc private func resetHistoryDefault() {
         recordButton.stop()

@@ -17,6 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var snippetPicker: SnippetPickerWindowController!
     private var snippetEditor: SnippetEditorWindowController!
     private var settingsController: SettingsWindowController!
+    private lazy var updateController = UpdateWindowController()
     private var historyHotKeyID: UInt32?
     private var snippetSummonHotKeyID: UInt32?
     private var snippetHotKeyIDs: [UUID: UInt32] = [:]
@@ -65,6 +66,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         settingsController = SettingsWindowController()
         settingsController.historyStore = store
         settingsController.snippetStore = snippetStore
+        settingsController.onShowVersions = { [weak self] in self?.updateController.show() }
+        settingsController.onCheckUpdates = { [weak self] in self?.updateController.show(checkForUpdates: true) }
         settingsController.onApply = { [weak self] cfg in
             guard let self else { return false }
             let applied = self.applyHotKey(cfg)

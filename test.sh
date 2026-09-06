@@ -16,6 +16,7 @@ swiftc -Onone -swift-version 5 \
     "$DIR/Sources/HotKey.swift" \
     "$DIR/Sources/Model.swift" \
     "$DIR/Sources/Store.swift" \
+    "$DIR/Sources/Updates.swift" \
     -framework Cocoa
 
 "$OUTPUT"
