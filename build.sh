@@ -39,7 +39,8 @@ lipo -create \
     -output "$APP/Contents/MacOS/PasteHistory"
 
 echo "==> Ad-hoc code signing"
-codesign --force --deep --sign - "$APP" 2>/dev/null || echo "   (codesign skipped)"
+codesign --force --deep --sign - "$APP"
+codesign --verify --deep --strict "$APP"
 
 echo "==> Done: $APP"
 echo "    Run with:  open \"$APP\""

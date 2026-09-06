@@ -33,9 +33,11 @@ jobs:
 
       - name: Resolve release version
         shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
         run: |
           if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
-            TAG="${{ inputs.tag }}"
+            TAG="$RELEASE_TAG"
           else
             TAG="$GITHUB_REF_NAME"
           fi
@@ -60,6 +62,9 @@ jobs:
 
           echo "TAG=$TAG" >> "$GITHUB_ENV"
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Run logic tests
+        run: bash test.sh
 
       - name: Build universal app
         shell: bash

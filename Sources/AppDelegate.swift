@@ -1,6 +1,6 @@
 import Cocoa
 
-class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private static let maxMenuHistoryItems = 5
     private static let maxMenuSnippetItems = 3
     private static let maxSubmenuItems = 100
@@ -40,9 +40,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         monitor = ClipboardMonitor(store: store)
-        monitor.onCapture = { [weak self] item in
-            self?.store.add(item)
-        }
         monitor.start()
 
         windowController = HistoryWindowController(store: store, monitor: monitor)
@@ -51,6 +48,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self?.snippetEditor.showNew(content: content)
         }
         snippetPicker = SnippetPickerWindowController(store: snippetStore, monitor: monitor)
+        snippetPicker.onCreate = { [weak self] in self?.snippetEditor.showNew() }
         snippetPicker.onEdit = { [weak self] snip in self?.snippetEditor.showEdit(snip) }
         snippetPicker.onError = { [weak self] message in self?.presentDataIssue(message) }
 
@@ -89,6 +87,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let menu = NSMenu()
         menu.delegate = self
         statusItem.menu = menu
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let editor = snippetEditor, editor.hasUnsavedChanges else { return .terminateNow }
+        DispatchQueue.main.async {
+            editor.confirmDiscardingChanges { allowed in
+                sender.reply(toApplicationShouldTerminate: allowed)
+            }
+        }
+        return .terminateLater
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -136,7 +144,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let hk = snip.hotKey else { continue }
             let sid = snip.id
             if let token = HotKeyCenter.shared.register(keyCode: hk.keyCode, modifiers: hk.carbonModifiers,
-                                                        callback: { [weak self] in self?.emitSnippet(id: sid) }) {
+                                                        callback: { [weak self] in self?.pasteSnippet(id: sid, after: 0.03) }) {
                 snippetHotKeyIDs[sid] = token
             }
         }
@@ -156,10 +164,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    private func emitSnippet(id: UUID) {
-        pasteSnippet(id: id, after: 0.03)
-    }
-
     private func pasteSnippet(id: UUID, after delay: Double) {
         guard let snip = snippetStore.items.first(where: { $0.id == id }) else { return }
         guard monitor.writeText(snip.content) else {
@@ -170,17 +174,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         AutoPaste.deliver(after: delay)
     }
 
-    private func menuHeaderTitle(primary: String, hotkey: String, trailing: String) -> NSAttributedString {
+    private func menuHeaderTitle(primary: String, hotkey: String, count: Int) -> NSAttributedString {
         let s = NSMutableAttributedString()
         s.append(NSAttributedString(string: primary,
             attributes: [.font: NSFont.systemFont(ofSize: 13, weight: .semibold),
                          .foregroundColor: NSColor.labelColor]))
-        s.append(NSAttributedString(string: "   \(hotkey)",
+        s.append(NSAttributedString(string: "  \(count)",
             attributes: [.font: NSFont.systemFont(ofSize: 11),
                          .foregroundColor: NSColor.secondaryLabelColor]))
-        s.append(NSAttributedString(string: "       \(trailing)",
-            attributes: [.font: NSFont.systemFont(ofSize: 11),
-                         .foregroundColor: NSColor.tertiaryLabelColor]))
+        s.append(NSAttributedString(string: "      \(hotkey)",
+            attributes: [.font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
+                         .foregroundColor: NSColor.secondaryLabelColor]))
         return s
     }
 
@@ -216,30 +220,26 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func menuThumbnail(_ source: NSImage) -> NSImage {
         let size = Self.menuThumbnailSize
-        let output = NSImage(size: size)
-        output.lockFocus()
-        defer { output.unlockFocus() }
+        return NSImage(size: size, flipped: false) { bounds in
+            let clip = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5),
+                                    xRadius: 3, yRadius: 3)
+            clip.addClip()
 
-        let bounds = NSRect(origin: .zero, size: size)
-        let clip = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5),
-                                xRadius: 3, yRadius: 3)
-        clip.addClip()
+            let sourceSize = NSSize(width: max(source.size.width, 1),
+                                    height: max(source.size.height, 1))
+            let scale = max(size.width / sourceSize.width, size.height / sourceSize.height)
+            let drawSize = NSSize(width: sourceSize.width * scale, height: sourceSize.height * scale)
+            let destination = NSRect(x: (size.width - drawSize.width) / 2,
+                                     y: (size.height - drawSize.height) / 2,
+                                     width: drawSize.width, height: drawSize.height)
+            NSGraphicsContext.current?.imageInterpolation = .high
+            source.draw(in: destination, from: .zero, operation: .sourceOver, fraction: 1)
 
-        let sourceSize = NSSize(width: max(source.size.width, 1),
-                                height: max(source.size.height, 1))
-        let scale = max(size.width / sourceSize.width, size.height / sourceSize.height)
-        let drawSize = NSSize(width: sourceSize.width * scale, height: sourceSize.height * scale)
-        let destination = NSRect(x: (size.width - drawSize.width) / 2,
-                                 y: (size.height - drawSize.height) / 2,
-                                 width: drawSize.width, height: drawSize.height)
-        NSGraphicsContext.current?.imageInterpolation = .high
-        source.draw(in: destination, from: .zero, operation: .sourceOver, fraction: 1)
-
-        NSColor.separatorColor.setStroke()
-        clip.lineWidth = 0.5
-        clip.stroke()
-        output.isTemplate = false
-        return output
+            NSColor.separatorColor.setStroke()
+            clip.lineWidth = 0.5
+            clip.stroke()
+            return true
+        }
     }
 
     private func makeSnippetItem(_ snip: Snippet) -> NSMenuItem {
@@ -253,7 +253,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         let mi = NSMenuItem(title: label, action: #selector(pasteSnippet(_:)), keyEquivalent: "")
         mi.target = self
-        mi.representedObject = snip.id.uuidString
+        mi.representedObject = snip.id
         if snip.hotKey != nil, snippetHotKeyIDs[snip.id] == nil {
             mi.toolTip = "快捷键注册失败，请修改与其他快捷键冲突的组合"
         }
@@ -267,14 +267,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                             action: #selector(restoreItem(_:)),
                             keyEquivalent: keyEquivalent)
         mi.target = self
-        mi.representedObject = item.id.uuidString
+        mi.representedObject = item.id
         switch item.kind {
         case .image:
             if let file = item.imageFile {
                 let key = file as NSString
                 if let cached = menuThumbnailCache.object(forKey: key) {
                     mi.image = cached
-                } else if let source = NSImage(contentsOf: store.imageURL(file)) {
+                } else if let source = loadImageThumbnail(at: store.imageURL(file), maxSize: Self.menuThumbnailSize.width) {
                     let thumbnail = menuThumbnail(source)
                     menuThumbnailCache.setObject(thumbnail, forKey: key)
                     mi.image = thumbnail
@@ -344,8 +344,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let header = NSMenuItem(title: "", action: #selector(summonHistory), keyEquivalent: "")
         header.attributedTitle = menuHeaderTitle(primary: "历史选择器",
                                                  hotkey: HotKeyConfig.history.display,
-                                                 trailing: "粘贴历史 · \(store.items.count) 条")
-        header.image = menuSymbol("doc.on.clipboard", pointSize: 16, weight: .medium)
+                                                 count: store.items.count)
+        header.image = menuSymbol("clock.arrow.circlepath", pointSize: 16, weight: .medium)
         header.target = self
         menu.addItem(header)
         menu.addItem(.separator())
@@ -355,7 +355,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else {
             let recentItems = Array(store.items.prefix(Self.maxMenuHistoryItems))
             for (i, item) in recentItems.enumerated() {
-                menu.addItem(makeHistoryItem(item, keyEquivalent: i < 9 ? "\(i + 1)" : ""))
+                menu.addItem(makeHistoryItem(item, keyEquivalent: "\(i + 1)"))
             }
             let remainingCount = store.items.count - recentItems.count
             if remainingCount > 0 {
@@ -373,11 +373,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                        keyEquivalent: "")
         snippetHeader.attributedTitle = menuHeaderTitle(primary: "片段选择器",
                                                         hotkey: HotKeyConfig.snippet.display,
-                                                        trailing: "代码片段 · \(snippetStore.items.count) 条")
-        snippetHeader.image = menuSymbol("chevron.left.forwardslash.chevron.right",
+                                                        count: snippetStore.items.count)
+        snippetHeader.image = menuSymbol("square.stack",
                                          pointSize: 16, weight: .medium)
         snippetHeader.target = self
         menu.addItem(snippetHeader)
+        menu.addItem(.separator())
 
         if snippetStore.items.isEmpty {
             menu.addItem(makeEmptyMenuItem("暂无代码片段"))
@@ -413,8 +414,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func restoreItem(_ sender: NSMenuItem) {
-        guard let idStr = sender.representedObject as? String,
-              let id = UUID(uuidString: idStr),
+        guard let id = sender.representedObject as? UUID,
               let item = store.items.first(where: { $0.id == id }) else { return }
         guard monitor.restore(item) else {
             NSSound.beep()
@@ -429,8 +429,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func openSnippetPickerWindow() { snippetPicker.show() }
 
     @objc private func pasteSnippet(_ sender: NSMenuItem) {
-        guard let idStr = sender.representedObject as? String,
-              let id = UUID(uuidString: idStr) else { return }
+        guard let id = sender.representedObject as? UUID else { return }
         pasteSnippet(id: id, after: 0.06)
     }
 

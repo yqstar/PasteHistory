@@ -13,13 +13,15 @@ final class HistoryWindowController {
     private let thumbCache = NSCache<NSString, NSImage>()
 
     init(store: HistoryStore, monitor: ClipboardMonitor) {
-        thumbCache.countLimit = 50
+        thumbCache.countLimit = 500
         self.store = store
         self.monitor = monitor
+        palette.title = "粘贴历史"
+        palette.symbolName = "clock.arrow.circlepath"
         palette.placeholder = "搜索粘贴历史…"
-        palette.emptyText = "暂无历史，复制点东西试试"
+        palette.emptyText = "还没有粘贴历史"
         palette.footerHints = [("↩", "粘贴"), ("⌘⌫", "删除"), ("esc", "关闭"), ("⌘S", "保存片段")]
-        palette.separatesLastFooterHint = true
+        palette.footerSeparatorIndex = 3
         palette.provider = { [weak self] q in self?.rows(for: q) ?? [] }
         palette.onActivate = { [weak self] i in self?.activate(i) ?? false }
         palette.onDelete = { [weak self] i in self?.deleteAt(i) }
@@ -27,7 +29,6 @@ final class HistoryWindowController {
     }
 
     func show() { palette.show() }
-    func hide() { palette.hide() }
     func toggle() { palette.toggle() }
     func refreshIfVisible() { palette.reloadIfVisible() }
 
@@ -36,7 +37,7 @@ final class HistoryWindowController {
             filtered = store.items
         } else {
             filtered = store.items.filter {
-                matchesQuery($0.oneLine(400), query) || matchesQuery(kindLabel($0.kind), query)
+                matchesQuery($0.text ?? "", query) || matchesQuery(kindLabel($0.kind), query)
             }
         }
         return filtered.map { item in
@@ -47,7 +48,8 @@ final class HistoryWindowController {
                        title: item.oneLine(120),
                        subtitle: relativeTime(item.date),
                        badge: kindLabel(item.kind),
-                       badgeColor: kindColor(item.kind))
+                       badgeColor: kindColor(item.kind),
+                       canSaveAsSnippet: item.kind == .text && !(item.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
     }
 
@@ -55,15 +57,7 @@ final class HistoryWindowController {
         if item.kind == .image, let f = item.imageFile {
             let key = f as NSString
             if let cached = thumbCache.object(forKey: key) { return cached }
-            guard let img = NSImage(contentsOf: store.imageURL(f)) else { return nil }
-            let thumbSize: CGFloat = 48
-            let ratio = max(img.size.width, 1) / max(img.size.height, 1)
-            let w = ratio >= 1 ? thumbSize : thumbSize * ratio
-            let h = ratio >= 1 ? thumbSize / ratio : thumbSize
-            let thumb = NSImage(size: NSSize(width: w, height: h))
-            thumb.lockFocus()
-            img.draw(in: NSRect(x: 0, y: 0, width: w, height: h))
-            thumb.unlockFocus()
+            guard let thumb = loadImageThumbnail(at: store.imageURL(f), maxSize: 48) else { return nil }
             thumbCache.setObject(thumb, forKey: key)
             return thumb
         }
@@ -104,6 +98,7 @@ final class SnippetPickerWindowController {
     let store: SnippetStore
     let monitor: ClipboardMonitor
     var onEdit: ((Snippet) -> Void)?
+    var onCreate: (() -> Void)?
     var onError: ((String) -> Void)?
 
     private let palette = PaletteController()
@@ -113,9 +108,15 @@ final class SnippetPickerWindowController {
     init(store: SnippetStore, monitor: ClipboardMonitor) {
         self.store = store
         self.monitor = monitor
+        palette.title = "代码片段"
+        palette.symbolName = "square.stack"
         palette.placeholder = "搜索代码片段…"
-        palette.emptyText = "暂无片段，可从设置 → 数据管理中保存或导入"
-        palette.footerHints = [("↩", "粘贴"), ("⌘E", "编辑"), ("⌘⌫", "删除"), ("esc", "关闭")]
+        palette.emptyText = "把常用内容存为片段"
+        palette.emptyDetail = "代码、链接或文本，保存一次，随时粘贴。"
+        palette.createActionTitle = "新建片段"
+        palette.footerHints = [("↩", "粘贴"), ("⌘⌫", "删除"), ("esc", "关闭"), ("⌘N", "新建"), ("⌘E", "编辑")]
+        palette.footerSeparatorIndex = 3
+        palette.onCreate = { [weak self] in self?.create() }
         palette.provider = { [weak self] q in self?.rows(for: q) ?? [] }
         palette.onActivate = { [weak self] i in self?.activate(i) ?? false }
         palette.onDelete = { [weak self] i in self?.deleteAt(i) }
@@ -125,17 +126,20 @@ final class SnippetPickerWindowController {
     func show() { palette.show() }
     func hide() { palette.hide() }
     func toggle() { palette.toggle() }
-    func refreshIfVisible() { palette.reloadIfVisible() }
-
     func updateHotKeyRegistration(activeIDs: Set<UUID>) {
         activeHotKeyIDs = activeIDs
-        refreshIfVisible()
+        palette.reloadIfVisible()
     }
 
     private func editAt(_ i: Int) {
         guard i >= 0, i < filtered.count else { return }
-        palette.hide()
+        palette.hide(reactivatePreviousApplication: false)
         onEdit?(filtered[i])
+    }
+
+    private func create() {
+        palette.hide(reactivatePreviousApplication: false)
+        onCreate?()
     }
 
     private func rows(for query: String) -> [PaletteRow] {
@@ -173,15 +177,8 @@ final class SnippetPickerWindowController {
         var parts: [String] = []
         if lineCount > 1 { parts.append("\(lineCount) 行") }
         parts.append("\(charCount) 字符")
-        parts.append(preview(of: stripped))
+        parts.append(oneLinePreview(stripped, limit: 80))
         return parts.joined(separator: " · ")
-    }
-
-    private func preview(of content: String) -> String {
-        var s = content.replacingOccurrences(of: "\n", with: " ")
-                       .replacingOccurrences(of: "\t", with: " ")
-        if s.count > 80 { s = String(s.prefix(80)) + "…" }
-        return s
     }
 
     private func activate(_ i: Int) -> Bool {
@@ -204,26 +201,45 @@ final class SnippetPickerWindowController {
 
 // MARK: - Snippet editor
 
-final class SnippetEditorWindowController: NSObject, NSWindowDelegate {
+final class SnippetEditorWindowController: NSObject, NSWindowDelegate, NSTextViewDelegate {
     let store: SnippetStore
 
     private var window: NSWindow!
     private var titleField: NSTextField!
     private var contentView: NSTextView!
+    private var contentStats: NSTextField!
     private var editing: Snippet?
+    private var isEditingSessionOpen = false
 
     init(store: SnippetStore) {
         self.store = store
     }
 
-    func showNew(content: String) {
-        editing = nil
-        showWindow(title: "保存片段", name: "", content: content)
+    var hasUnsavedChanges: Bool {
+        guard isEditingSessionOpen else { return false }
+        return titleField.stringValue != (editing?.title ?? "") ||
+            contentView.string != (editing?.content ?? "")
+    }
+
+    func showNew(content: String = "") {
+        confirmDiscardingChanges { [weak self] allowed in
+            guard let self, allowed else { return }
+            self.editing = nil
+            self.showWindow(title: content.isEmpty ? "新建片段" : "保存片段", name: "", content: content)
+        }
     }
 
     func showEdit(_ snippet: Snippet) {
-        editing = snippet
-        showWindow(title: "编辑片段", name: snippet.title, content: snippet.content)
+        if isEditingSessionOpen, editing?.id == snippet.id {
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+            return
+        }
+        confirmDiscardingChanges { [weak self] allowed in
+            guard let self, allowed else { return }
+            self.editing = snippet
+            self.showWindow(title: "编辑片段", name: snippet.title, content: snippet.content)
+        }
     }
 
     private func showWindow(title: String, name: String, content: String) {
@@ -231,6 +247,10 @@ final class SnippetEditorWindowController: NSObject, NSWindowDelegate {
         window.title = title
         titleField.stringValue = name
         contentView.string = content
+        updateContentStats()
+        isEditingSessionOpen = true
+        contentView.undoManager?.removeAllActions()
+        window.undoManager?.removeAllActions()
         NSApp.activate(ignoringOtherApps: true)
         centerWindowOnPointerScreen(window)
         window.makeKeyAndOrderFront(nil)
@@ -238,17 +258,32 @@ final class SnippetEditorWindowController: NSObject, NSWindowDelegate {
     }
 
     private func build() {
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 440),
-                          styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 480),
+                          styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = "保存片段"
-        window.subtitle = "保存后会出现在片段选择器"
+        window.titlebarAppearsTransparent = true
+        window.backgroundColor = UIStyle.canvas
+        window.minSize = NSSize(width: 480, height: 420)
         window.isReleasedWhenClosed = false
         window.delegate = self
 
         titleField = NSTextField()
         titleField.placeholderString = "为这段内容起个名字"
-        titleField.font = .systemFont(ofSize: 15)
-        titleField.bezelStyle = .roundedBezel
+        titleField.font = .systemFont(ofSize: 14)
+        titleField.isBordered = false
+        titleField.isBezeled = false
+        titleField.drawsBackground = false
+        titleField.focusRingType = .exterior
+        titleField.translatesAutoresizingMaskIntoConstraints = false
+        titleField.setAccessibilityLabel("片段标题")
+        let titleSurface = SurfaceView(border: UIStyle.border, radius: 8)
+        titleSurface.addSubview(titleField)
+        NSLayoutConstraint.activate([
+            titleSurface.heightAnchor.constraint(equalToConstant: 40),
+            titleField.leadingAnchor.constraint(equalTo: titleSurface.leadingAnchor, constant: 12),
+            titleField.trailingAnchor.constraint(equalTo: titleSurface.trailingAnchor, constant: -12),
+            titleField.centerYAnchor.constraint(equalTo: titleSurface.centerYAnchor),
+        ])
 
         contentView = NSTextView()
         contentView.isRichText = false
@@ -257,15 +292,35 @@ final class SnippetEditorWindowController: NSObject, NSWindowDelegate {
         contentView.isAutomaticTextReplacementEnabled = false
         contentView.isAutomaticSpellingCorrectionEnabled = false
         contentView.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        contentView.textColor = .labelColor
+        contentView.backgroundColor = UIStyle.surface
+        contentView.delegate = self
+        contentView.setAccessibilityLabel("片段正文")
         contentView.allowsUndo = true
         contentView.autoresizingMask = [.width]
-        contentView.textContainerInset = NSSize(width: 6, height: 6)
+        contentView.textContainerInset = NSSize(width: 12, height: 12)
+        contentView.isHorizontallyResizable = false
+        contentView.isVerticallyResizable = true
+        contentView.textContainer?.widthTracksTextView = true
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineSpacing = 4
+        contentView.defaultParagraphStyle = paragraph
 
         let scroll = NSScrollView()
-        scroll.borderType = .bezelBorder
+        scroll.borderType = .noBorder
+        scroll.drawsBackground = false
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
         scroll.documentView = contentView
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        let contentSurface = SurfaceView(border: UIStyle.border, radius: 8)
+        contentSurface.addSubview(scroll)
+        NSLayoutConstraint.activate([
+            scroll.topAnchor.constraint(equalTo: contentSurface.topAnchor, constant: 4),
+            scroll.bottomAnchor.constraint(equalTo: contentSurface.bottomAnchor, constant: -4),
+            scroll.leadingAnchor.constraint(equalTo: contentSurface.leadingAnchor, constant: 4),
+            scroll.trailingAnchor.constraint(equalTo: contentSurface.trailingAnchor, constant: -4),
+        ])
 
         let cancelBtn = makeDialogButton("取消", action: #selector(cancel), keyEquivalent: "\u{1b}")
         let saveBtn = makeDialogButton("保存", action: #selector(save), keyEquivalent: "\r")
@@ -274,40 +329,62 @@ final class SnippetEditorWindowController: NSObject, NSWindowDelegate {
         buttons.orientation = .horizontal
         buttons.spacing = 8
 
-        let v = NSView()
-        let titleSection = labeledSection("标题", control: titleField)
-        let contentSection = labeledSection("内容", control: scroll)
+        let v = SurfaceView(fill: UIStyle.canvas, radius: 0)
+        let titleSection = labeledSection("标题", detail: "可选 · 留空时自动命名", control: titleSurface)
+        let contentSection = labeledSection("内容", detail: "纯文本", control: contentSurface)
+        contentStats = UIStyle.label("", size: 11, color: .secondaryLabelColor)
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.init(1), for: .horizontal)
+        let footer = NSStackView(views: [contentStats, spacer, buttons])
+        footer.alignment = .centerY
+        footer.spacing = 12
+        let divider = UIStyle.separator()
 
-        let stack = NSStackView(views: [titleSection, contentSection, buttons])
+        let stack = NSStackView(views: [titleSection, contentSection, divider, footer])
         stack.orientation = .vertical
-        stack.alignment = .trailing
+        stack.alignment = .leading
         stack.spacing = 16
         stack.translatesAutoresizingMaskIntoConstraints = false
         v.addSubview(stack)
 
         NSLayoutConstraint.activate([
             stack.topAnchor.constraint(equalTo: v.topAnchor, constant: 20),
-            stack.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 22),
-            stack.trailingAnchor.constraint(equalTo: v.trailingAnchor, constant: -22),
-            stack.bottomAnchor.constraint(equalTo: v.bottomAnchor, constant: -18),
+            stack.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 24),
+            stack.trailingAnchor.constraint(equalTo: v.trailingAnchor, constant: -24),
+            stack.bottomAnchor.constraint(equalTo: v.bottomAnchor, constant: -20),
 
             titleSection.widthAnchor.constraint(equalTo: stack.widthAnchor),
             contentSection.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 220),
+            contentSurface.heightAnchor.constraint(greaterThanOrEqualToConstant: 180),
+            divider.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            footer.widthAnchor.constraint(equalTo: stack.widthAnchor),
         ])
 
         window.contentView = v
     }
 
-    private func labeledSection(_ title: String, control: NSView) -> NSView {
-        let lbl = NSTextField(labelWithString: title)
-        lbl.font = .systemFont(ofSize: 11, weight: .medium)
-        lbl.textColor = .secondaryLabelColor
-        let s = NSStackView(views: [lbl, control])
+    private func labeledSection(_ title: String, detail: String, control: NSView) -> NSView {
+        let lbl = UIStyle.label(title, size: 12, weight: .semibold)
+        let hint = UIStyle.label(detail, size: 11, color: .secondaryLabelColor)
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.init(1), for: .horizontal)
+        let heading = NSStackView(views: [lbl, spacer, hint])
+        heading.alignment = .centerY
+        let s = NSStackView(views: [heading, control])
         s.orientation = .vertical
         s.alignment = .leading
-        s.spacing = 6
+        s.spacing = 8
+        heading.widthAnchor.constraint(equalTo: s.widthAnchor).isActive = true
+        control.widthAnchor.constraint(equalTo: s.widthAnchor).isActive = true
         return s
+    }
+
+    func textDidChange(_ notification: Notification) { updateContentStats() }
+
+    private func updateContentStats() {
+        let text = contentView.string
+        let lines = text.isEmpty ? 0 : text.split(separator: "\n", omittingEmptySubsequences: false).count
+        contentStats.stringValue = "\(lines) 行 · \(text.count) 字符"
     }
 
     private func makeDialogButton(_ title: String, action: Selector, keyEquivalent: String) -> NSButton {
@@ -319,17 +396,60 @@ final class SnippetEditorWindowController: NSObject, NSWindowDelegate {
     }
 
     @objc private func cancel() {
+        confirmDiscardingChanges { [weak self] allowed in
+            if allowed { self?.closeEditor() }
+        }
+    }
+
+    private func closeEditor() {
+        isEditingSessionOpen = false
         window.orderOut(nil)
     }
 
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        cancel()
+        return false
+    }
+
+    func confirmDiscardingChanges(_ completion: @escaping (Bool) -> Void) {
+        guard window?.attachedSheet == nil else {
+            window.makeKeyAndOrderFront(nil)
+            completion(false)
+            return
+        }
+        guard hasUnsavedChanges else { completion(true); return }
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        let name = titleField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let alert = NSAlert()
+        alert.messageText = "保存对“\(name.isEmpty ? "新片段" : name)”的修改？"
+        alert.informativeText = "选择“放弃”将丢失当前未保存的内容。"
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "保存")
+        alert.addButton(withTitle: "放弃")
+        alert.addButton(withTitle: "取消").keyEquivalent = "\u{1b}"
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard let self else { completion(false); return }
+            switch response {
+            case .alertFirstButtonReturn: completion(self.saveDraft())
+            case .alertSecondButtonReturn: completion(true)
+            default: completion(false)
+            }
+        }
+    }
+
     @objc private func save() {
+        if saveDraft() { closeEditor() }
+    }
+
+    private func saveDraft() -> Bool {
         let rawTitle = titleField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         let content = contentView.string
         let bodyEmpty = content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         guard !bodyEmpty else {
             showEditorError(title: "无法保存片段", message: "片段正文不能为空")
             window.makeFirstResponder(contentView)
-            return
+            return false
         }
         let title = rawTitle.isEmpty ? defaultTitle(for: content) : rawTitle
         do {
@@ -337,20 +457,30 @@ final class SnippetEditorWindowController: NSObject, NSWindowDelegate {
                 snippet.title = title
                 snippet.content = content
                 try store.update(snippet)
-                window.orderOut(nil)
+                editing = snippet
+                titleField.stringValue = snippet.title
+                return true
             } else {
                 switch try store.add(title: title, content: content) {
-                case .added:
-                    window.orderOut(nil)
+                case .added(let snippet):
+                    editing = snippet
+                    titleField.stringValue = snippet.title
+                    return true
                 case .duplicate(let existing):
-                    openExisting(existing)
+                    showDuplicateError(existing)
                 }
             }
         } catch SnippetStore.StoreError.duplicateContent(let existing) {
-            openExisting(existing)
+            showDuplicateError(existing)
+        } catch SnippetStore.StoreError.snippetNotFound {
+            editing = nil
+            window.title = "新建片段"
+            showEditorError(title: "原片段已不存在",
+                            message: "该片段已被删除或替换，当前内容已保留。再次点击“保存”可将其另存为新片段。")
         } catch {
             showEditorError(title: "无法保存片段", message: error.localizedDescription)
         }
+        return false
     }
 
     private func defaultTitle(for content: String) -> String {
@@ -360,14 +490,9 @@ final class SnippetEditorWindowController: NSObject, NSWindowDelegate {
         return first.count > 60 ? String(first.prefix(60)) + "…" : first
     }
 
-    private func openExisting(_ snippet: Snippet) {
-        editing = snippet
-        window.title = "编辑片段"
-        titleField.stringValue = snippet.title
-        contentView.string = snippet.content
-        window.makeFirstResponder(titleField)
+    private func showDuplicateError(_ snippet: Snippet) {
         showEditorError(title: "片段已存在",
-                        message: "相同正文已存在，已为你打开原片段。")
+                        message: "相同正文已存在于片段“\(snippet.title)”。当前修改已保留，请修改正文后再保存。")
     }
 
     private func showEditorError(title: String, message: String) {
@@ -415,19 +540,19 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTextFieldDel
     }
 
     private func build() {
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: 430),
-                          styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 580, height: 600),
+                          styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = "设置"
+        window.titlebarAppearsTransparent = true
+        window.backgroundColor = UIStyle.canvas
+        window.minSize = NSSize(width: 540, height: 480)
         window.isReleasedWhenClosed = false
         window.delegate = self
-        window.contentView = buildGeneralTab()
+        window.contentView = buildContentView()
     }
 
     private func sectionLabel(_ s: String) -> NSTextField {
-        let l = NSTextField(labelWithString: s)
-        l.font = .systemFont(ofSize: 13, weight: .semibold)
-        l.translatesAutoresizingMaskIntoConstraints = false
-        return l
+        UIStyle.label(s, size: 12, weight: .semibold, color: .secondaryLabelColor)
     }
     private func footnote(_ s: String) -> NSTextField {
         let l = NSTextField(labelWithString: s)
@@ -439,28 +564,56 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTextFieldDel
         return l
     }
 
-    private func buildGeneralTab() -> NSView {
-        let v = NSView()
+    private func buildContentView() -> NSView {
+        let v = SurfaceView(fill: UIStyle.canvas, radius: 0)
+        let scroll = NSScrollView()
+        scroll.drawsBackground = false
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        let document = FlippedDocumentView()
+        document.translatesAutoresizingMaskIntoConstraints = false
+        scroll.documentView = document
+        v.addSubview(scroll)
+        NSLayoutConstraint.activate([
+            scroll.topAnchor.constraint(equalTo: v.topAnchor),
+            scroll.bottomAnchor.constraint(equalTo: v.bottomAnchor),
+            scroll.leadingAnchor.constraint(equalTo: v.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: v.trailingAnchor),
+            document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
+        ])
+
+        let appIcon = UIStyle.symbol("doc.on.clipboard", size: 28, color: .controlAccentColor)
+        appIcon.widthAnchor.constraint(equalToConstant: 36).isActive = true
+        let appTitle = UIStyle.label("PasteHistory", size: 18, weight: .semibold)
+        let appDetail = UIStyle.label("快捷访问与本地数据", size: 12, color: .secondaryLabelColor)
+        let appText = NSStackView(views: [appTitle, appDetail])
+        appText.orientation = .vertical
+        appText.alignment = .leading
+        appText.spacing = 4
+        let header = NSStackView(views: [appIcon, appText])
+        header.alignment = .centerY
+        header.spacing = 12
 
         recordButton = HotKeyRecorderButton()
         recordButton.config = HotKeyConfig.history
         recordButton.onChange = { [weak self] cfg in self?.onApply?(cfg) ?? false }
         recordButton.onStatus = { [weak self] msg in self?.setStatus(msg) }
-        recordButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 120).isActive = true
+        recordButton.widthAnchor.constraint(equalToConstant: 116).isActive = true
 
         snippetSummonButton = HotKeyRecorderButton()
         snippetSummonButton.config = HotKeyConfig.snippet
         snippetSummonButton.onChange = { [weak self] cfg in self?.onApplySnippetSummon?(cfg) ?? false }
         snippetSummonButton.onStatus = { [weak self] msg in self?.setStatus(msg) }
-        snippetSummonButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 120).isActive = true
+        snippetSummonButton.widthAnchor.constraint(equalToConstant: 116).isActive = true
 
         let hkGroup = makeGroup([
-            formRow("唤出历史选择器", trailing: [recordButton, smallButton("恢复默认", #selector(resetHistoryDefault))]),
+            formRow("历史选择器", symbol: "clock.arrow.circlepath", trailing: [recordButton, smallButton("恢复默认", #selector(resetHistoryDefault))]),
             hSeparator(),
-            formRow("唤出片段选择器", trailing: [snippetSummonButton, smallButton("恢复默认", #selector(resetSnippetSummonDefault))]),
+            formRow("片段选择器", symbol: "square.stack", trailing: [snippetSummonButton, smallButton("恢复默认", #selector(resetSnippetSummonDefault))]),
         ])
 
-        let hkHint = footnote("点击按钮录制新快捷键。组合键需包含 ⌘、⌥ 或 ⌃；按 Esc 取消，若组合已被占用则保留当前设置。")
+        let hkHint = footnote("点击快捷键开始录制，按 Esc 取消。组合键需包含 ⌘、⌥ 或 ⌃。")
         statusLabel = footnote("")
         statusLabel.isHidden = true
         let hkHelp = NSStackView(views: [hkHint, statusLabel])
@@ -478,6 +631,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTextFieldDel
         maxItemsField.alignment = .center
         maxItemsField.bezelStyle = .roundedBezel
         maxItemsField.delegate = self
+        maxItemsField.setAccessibilityLabel("保留历史条数")
         maxItemsField.widthAnchor.constraint(equalToConstant: 60).isActive = true
 
         maxItemsStepper = NSStepper()
@@ -488,12 +642,10 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTextFieldDel
         maxItemsStepper.target = self
         maxItemsStepper.action = #selector(stepperChanged)
 
-        let maxItemsHint = footnote("范围 10 – 500")
-
         let genGroup = makeGroup([
-            formRow("保留历史条数", trailing: [maxItemsField, maxItemsStepper, maxItemsHint]),
+            formRow("保留历史条数", detail: "保留最近 10–500 条记录", symbol: "clock", trailing: [maxItemsField, maxItemsStepper]),
             hSeparator(),
-            formRow("开机自启动", trailing: [autostartSwitch]),
+            formRow("开机自启动", detail: "登录后在菜单栏自动运行", symbol: "power", trailing: [autostartSwitch]),
         ])
 
         let clearHistoryButton = smallButton("清空历史…", #selector(clearHistory))
@@ -507,9 +659,9 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTextFieldDel
         snippetActions.spacing = 8
 
         let dataGroup = makeGroup([
-            formRow("历史记录", trailing: [clearHistoryButton]),
+            formRow("历史管理", detail: "清空已记录的文本、图片和文件", symbol: "tray", trailing: [clearHistoryButton]),
             hSeparator(),
-            formRow("代码片段", trailing: [snippetActions]),
+            formRow("片段管理", detail: "通过 JSON 备份或迁移常用片段", symbol: "square.stack", trailing: [snippetActions]),
         ])
         dataStatusLabel = footnote("")
         dataStatusLabel.isHidden = true
@@ -518,13 +670,14 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTextFieldDel
         let genTitle = sectionLabel("通用")
         let dataTitle = sectionLabel("数据管理")
 
-        let stack = NSStackView(views: [genTitle, genGroup,
+        let stack = NSStackView(views: [header, genTitle, genGroup,
                                         hkTitle, hkGroup, hkHelp,
                                         dataTitle, dataGroup, dataStatusLabel])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 6
         stack.translatesAutoresizingMaskIntoConstraints = false
+        stack.setCustomSpacing(24, after: header)
         stack.setCustomSpacing(8, after: genTitle)
         stack.setCustomSpacing(20, after: genGroup)
         stack.setCustomSpacing(8, after: hkTitle)
@@ -533,11 +686,12 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTextFieldDel
         stack.setCustomSpacing(8, after: dataTitle)
         stack.setCustomSpacing(4, after: dataGroup)
 
-        v.addSubview(stack)
+        document.addSubview(stack)
         NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: v.topAnchor, constant: 22),
-            stack.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 24),
-            stack.trailingAnchor.constraint(equalTo: v.trailingAnchor, constant: -24),
+            stack.topAnchor.constraint(equalTo: document.topAnchor, constant: 22),
+            stack.leadingAnchor.constraint(equalTo: document.leadingAnchor, constant: 24),
+            stack.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -24),
+            stack.bottomAnchor.constraint(equalTo: document.bottomAnchor, constant: -24),
             hkGroup.widthAnchor.constraint(equalTo: stack.widthAnchor),
             genGroup.widthAnchor.constraint(equalTo: stack.widthAnchor),
             dataGroup.widthAnchor.constraint(equalTo: stack.widthAnchor),
@@ -549,55 +703,58 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTextFieldDel
         return v
     }
 
-    private func formRow(_ title: String, trailing: [NSView]) -> NSView {
-        let l = NSTextField(labelWithString: title)
-        l.font = .systemFont(ofSize: 13)
+    private func formRow(_ title: String, detail: String? = nil, symbol: String, trailing: [NSView]) -> NSView {
+        let l = UIStyle.label(title, size: 13)
+        let text = NSStackView(views: [l])
+        text.orientation = .vertical
+        text.alignment = .leading
+        text.spacing = 4
+        if let detail { text.addArrangedSubview(UIStyle.label(detail, size: 11, color: .secondaryLabelColor)) }
+        let icon = UIStyle.symbol(symbol, size: 15)
+        icon.widthAnchor.constraint(equalToConstant: 20).isActive = true
         let spacer = NSView()
         spacer.setContentHuggingPriority(.init(1), for: .horizontal)
         spacer.setContentCompressionResistancePriority(.init(1), for: .horizontal)
-        let row = NSStackView(views: [l, spacer] + trailing)
+        let row = NSStackView(views: [icon, text, spacer] + trailing)
         row.orientation = .horizontal
         row.alignment = .centerY
         row.spacing = 8
-        row.edgeInsets = NSEdgeInsets(top: 9, left: 14, bottom: 9, right: 14)
+        row.edgeInsets = NSEdgeInsets(top: 12, left: 14, bottom: 12, right: 14)
+        row.heightAnchor.constraint(greaterThanOrEqualToConstant: detail == nil ? 48 : 60).isActive = true
         return row
     }
 
-    private func makeGroup(_ rows: [NSView]) -> NSBox {
+    private func makeGroup(_ rows: [NSView]) -> NSView {
         let stack = NSStackView(views: rows)
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 0
         stack.translatesAutoresizingMaskIntoConstraints = false
 
-        let container = NSView()
+        let container = SurfaceView(border: UIStyle.border)
         container.addSubview(stack)
         NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: container.topAnchor),
-            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 1),
+            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -1),
+            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 1),
+            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -1),
         ])
         for r in rows { r.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
 
-        let box = NSBox()
-        box.boxType = .custom
-        box.titlePosition = .noTitle
-        box.cornerRadius = 8
-        box.borderWidth = 1
-        box.borderColor = .separatorColor
-        box.fillColor = .controlBackgroundColor
-        box.contentViewMargins = .zero
-        box.contentView = container
-        box.translatesAutoresizingMaskIntoConstraints = false
-        return box
+        return container
     }
 
     private func hSeparator() -> NSView {
-        let b = NSBox()
-        b.boxType = .separator
-        b.translatesAutoresizingMaskIntoConstraints = false
-        return b
+        let container = NSView()
+        let line = UIStyle.separator()
+        container.addSubview(line)
+        NSLayoutConstraint.activate([
+            container.heightAnchor.constraint(equalToConstant: 1),
+            line.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+            line.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 42),
+            line.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+        ])
+        return container
     }
 
     private func smallButton(_ title: String, _ action: Selector) -> NSButton {
@@ -605,6 +762,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTextFieldDel
         b.bezelStyle = .rounded
         b.controlSize = .small
         b.font = .systemFont(ofSize: 11)
+        b.setContentCompressionResistancePriority(.required, for: .horizontal)
         return b
     }
 
@@ -688,7 +846,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTextFieldDel
             guard response == .OK, let url = panel.url else { return }
             do {
                 let data = try Data(contentsOf: url)
-                let snippets = try store.decodeImportData(data)
+                let snippets = try JSONDecoder().decode([Snippet].self, from: data)
                 self?.confirmImport(snippets, into: store)
             } catch {
                 self?.showDataError(title: "无法导入片段", error: error)
@@ -772,5 +930,10 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTextFieldDel
         snippetSummonButton.stop()
         setStatus(nil)
         setDataStatus(nil)
+    }
+
+    func windowDidResignKey(_ notification: Notification) {
+        recordButton.stop()
+        snippetSummonButton.stop()
     }
 }

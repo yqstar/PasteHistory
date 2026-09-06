@@ -3,11 +3,7 @@ import Carbon.HIToolbox
 
 // MARK: - Global hotkey (Carbon — no Accessibility permission needed)
 
-private func fourCharCode(_ s: String) -> OSType {
-    var result: OSType = 0
-    for ch in s.utf8.prefix(4) { result = (result << 8) + OSType(ch) }
-    return result
-}
+private let hotKeySignature: OSType = 0x50485459 // "PHTY"
 
 final class HotKeyCenter {
     static let shared = HotKeyCenter()
@@ -29,15 +25,11 @@ final class HotKeyCenter {
             let err = GetEventParameter(event, EventParamName(kEventParamDirectObject),
                                         EventParamType(typeEventHotKeyID), nil,
                                         MemoryLayout<EventHotKeyID>.size, nil, &hkID)
-            if err == noErr { HotKeyCenter.shared.fire(id: hkID.id) }
+            if err == noErr, hkID.signature == hotKeySignature { HotKeyCenter.shared.callbacks[hkID.id]?() }
             return noErr
         }, 1, &eventType, nil, nil)
         installed = status == noErr
         return installed
-    }
-
-    fileprivate func fire(id: UInt32) {
-        callbacks[id]?()
     }
 
     func register(keyCode: UInt32, modifiers: UInt32, callback: @escaping () -> Void) -> UInt32? {
@@ -45,7 +37,7 @@ final class HotKeyCenter {
         let id = nextID
         nextID += 1
         var ref: EventHotKeyRef?
-        let hotKeyID = EventHotKeyID(signature: fourCharCode("PHTY"), id: id)
+        let hotKeyID = EventHotKeyID(signature: hotKeySignature, id: id)
         let status = RegisterEventHotKey(keyCode, modifiers, hotKeyID,
                                          GetApplicationEventTarget(), 0, &ref)
         guard status == noErr, let ref = ref else { return nil }
@@ -64,17 +56,18 @@ final class HotKeyCenter {
 // MARK: - Hotkey recorder button
 
 final class HotKeyRecorderButton: NSButton {
-    var placeholder = "未设置"
     var config: HotKeyConfig? { didSet { if !recording { updateTitle() } } }
     var onChange: ((HotKeyConfig) -> Bool)?
     var onStatus: ((String) -> Void)?
 
     private var recording = false
     private var monitor: Any?
+    private static weak var activeRecorder: HotKeyRecorderButton?
 
     convenience init() {
         self.init(frame: .zero)
         bezelStyle = .rounded
+        font = .monospacedSystemFont(ofSize: 12, weight: .medium)
         setButtonType(.momentaryPushIn)
         target = self
         action = #selector(toggle)
@@ -83,25 +76,35 @@ final class HotKeyRecorderButton: NSButton {
     }
 
     private func updateTitle() {
-        title = recording ? "按下组合键…" : (config?.display ?? placeholder)
+        title = recording ? "按下组合键…" : (config?.display ?? "未设置")
+        contentTintColor = recording ? .controlAccentColor : .labelColor
+        toolTip = recording ? "按下新组合键，或按 Esc 取消" : "点击录制快捷键"
     }
 
     @objc private func toggle() { recording ? stop() : start() }
 
     private func start() {
+        Self.activeRecorder?.stop()
+        Self.activeRecorder = self
         recording = true
         updateTitle()
         onStatus?("正在录制：请按下组合键（Esc 取消）")
         monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] e in
-            self?.handle(e)
+            guard let self, self.window?.isKeyWindow == true else { return e }
+            self.handle(e)
             return nil
         }
     }
 
     func stop() {
+        if Self.activeRecorder === self { Self.activeRecorder = nil }
         recording = false
         if let m = monitor { NSEvent.removeMonitor(m); monitor = nil }
         updateTitle()
+    }
+
+    deinit {
+        if let monitor { NSEvent.removeMonitor(monitor) }
     }
 
     private func handle(_ e: NSEvent) {

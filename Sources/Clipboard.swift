@@ -5,12 +5,10 @@ import ApplicationServices
 // MARK: - Clipboard monitor
 
 final class ClipboardMonitor {
-    private let pb = NSPasteboard.general
+    private let pb: NSPasteboard
     private var lastChange: Int
     private var timer: Timer?
-    private var returnToNormalWork: DispatchWorkItem?
-    let store: HistoryStore
-    var onCapture: ((ClipItem) -> Void)?
+    private let store: HistoryStore
 
     private var lastActivity = Date()
     private var currentInterval: TimeInterval = 1.0
@@ -20,8 +18,9 @@ final class ClipboardMonitor {
     private static let activeDuration: TimeInterval = 5.0
     private static let idleDelay: TimeInterval = 30.0
 
-    init(store: HistoryStore) {
+    init(store: HistoryStore, pasteboard: NSPasteboard = .general) {
         self.store = store
+        pb = pasteboard
         lastChange = pb.changeCount
     }
 
@@ -34,15 +33,13 @@ final class ClipboardMonitor {
     func stop() {
         timer?.invalidate()
         timer = nil
-        returnToNormalWork?.cancel()
-        returnToNormalWork = nil
     }
 
     private func reschedule(_ interval: TimeInterval) {
         guard timer == nil || currentInterval != interval else { return }
         timer?.invalidate()
         currentInterval = interval
-        let t = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+        let t = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
             self?.poll()
         }
         t.tolerance = min(0.1, interval * 0.2)
@@ -50,36 +47,21 @@ final class ClipboardMonitor {
         timer = t
     }
 
-    func suppressNext() {
-        lastChange = pb.changeCount
-    }
-
     private func poll() {
         let c = pb.changeCount
         guard c != lastChange else {
-            if Date().timeIntervalSince(lastActivity) >= Self.idleDelay,
-               currentInterval != Self.idleInterval {
+            let elapsed = Date().timeIntervalSince(lastActivity)
+            if elapsed >= Self.idleDelay {
                 reschedule(Self.idleInterval)
+            } else if elapsed >= Self.activeDuration {
+                reschedule(Self.normalInterval)
             }
             return
         }
         lastChange = c
         lastActivity = Date()
-        if currentInterval != Self.activeInterval {
-            reschedule(Self.activeInterval)
-        }
-        scheduleReturnToNormal()
+        reschedule(Self.activeInterval)
         capture()
-    }
-
-    private func scheduleReturnToNormal() {
-        returnToNormalWork?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            guard let self, self.currentInterval == Self.activeInterval else { return }
-            self.reschedule(Self.normalInterval)
-        }
-        returnToNormalWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.activeDuration, execute: work)
     }
 
     private func capture() {
@@ -88,17 +70,16 @@ final class ClipboardMonitor {
                                      options: [.urlReadingFileURLsOnly: true]) as? [URL],
            !urls.isEmpty {
             let paths = urls.map { $0.path }.joined(separator: "\n")
-            onCapture?(ClipItem(id: UUID(), kind: .file, text: paths, imageFile: nil, date: Date()))
+            store.add(ClipItem(id: UUID(), kind: .file, text: paths, imageFile: nil, date: Date()))
             return
         }
         if let fname = saveImageFromPasteboard() {
-            onCapture?(ClipItem(id: UUID(), kind: .image, text: nil, imageFile: fname, date: Date()))
+            store.add(ClipItem(id: UUID(), kind: .image, text: nil, imageFile: fname, date: Date()))
             return
         }
         if let str = pb.string(forType: .string),
            !str.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            onCapture?(ClipItem(id: UUID(), kind: .text, text: str, imageFile: nil, date: Date()))
-            return
+            store.add(ClipItem(id: UUID(), kind: .text, text: str, imageFile: nil, date: Date()))
         }
     }
 
@@ -126,8 +107,23 @@ final class ClipboardMonitor {
 
     @discardableResult
     func restore(_ item: ClipItem) -> Bool {
-        guard restoreToClipboard(item, store: store) else { return false }
-        suppressNext()
+        let objects: [NSPasteboardWriting]
+        switch item.kind {
+        case .text:
+            return writeText(item.text ?? "")
+        case .file:
+            let urls = (item.text ?? "").split(separator: "\n")
+                .map { NSURL(fileURLWithPath: String($0)) }
+            guard !urls.isEmpty else { return false }
+            objects = urls
+        case .image:
+            guard let name = item.imageFile,
+                  let image = NSImage(contentsOf: store.imageURL(name)) else { return false }
+            objects = [image]
+        }
+        pb.clearContents()
+        guard pb.writeObjects(objects) else { return false }
+        lastChange = pb.changeCount
         return true
     }
 
@@ -135,39 +131,15 @@ final class ClipboardMonitor {
     func writeText(_ text: String) -> Bool {
         pb.clearContents()
         guard pb.setString(text, forType: .string) else { return false }
-        suppressNext()
+        lastChange = pb.changeCount
         return true
-    }
-}
-
-// MARK: - Clipboard restore
-
-@discardableResult
-func restoreToClipboard(_ item: ClipItem, store: HistoryStore) -> Bool {
-    let pb = NSPasteboard.general
-    switch item.kind {
-    case .text:
-        pb.clearContents()
-        return pb.setString(item.text ?? "", forType: .string)
-    case .file:
-        let urls = (item.text ?? "").components(separatedBy: "\n")
-            .filter { !$0.isEmpty }
-            .map { URL(fileURLWithPath: $0) as NSURL }
-        guard !urls.isEmpty else { return false }
-        pb.clearContents()
-        return pb.writeObjects(urls)
-    case .image:
-        guard let file = item.imageFile,
-              let image = NSImage(contentsOf: store.imageURL(file)) else { return false }
-        pb.clearContents()
-        return pb.writeObjects([image])
     }
 }
 
 // MARK: - Auto-paste (simulate ⌘V in the originating app)
 
 enum AutoPaste {
-    static var isTrusted: Bool { AXIsProcessTrusted() }
+    private static var isTrusted: Bool { AXIsProcessTrusted() }
     private static var didPrompt = false
     private static var didSecureAlert = false
 
@@ -175,14 +147,12 @@ enum AutoPaste {
     /// App activation is asynchronous, so posting only to the global event stream can
     /// otherwise send Command-V back to PasteHistory while its palette is closing.
     static func deliver(to application: NSRunningApplication? = nil, after delay: Double = 0.15) {
-        let target = pasteTarget(application)
+        guard let target = pasteTarget(application) else { return }
         if isTrusted {
-            if let target, !target.isActive {
-                target.activate()
-            }
+            if !target.isActive { target.activate() }
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                guard target?.isTerminated != true else { return }
-                postPaste(to: target?.processIdentifier)
+                guard !target.isTerminated else { return }
+                postPaste(to: target.processIdentifier)
             }
         } else {
             showPermissionAlertIfNeeded()
@@ -199,7 +169,7 @@ enum AutoPaste {
         return frontmost
     }
 
-    private static func postPaste(to processIdentifier: pid_t?) {
+    private static func postPaste(to processIdentifier: pid_t) {
         if IsSecureEventInputEnabled() {
             showSecureInputAlertIfNeeded()
             return
@@ -213,13 +183,8 @@ enum AutoPaste {
         }
         vDown.flags = .maskCommand
         vUp.flags = .maskCommand
-        if let processIdentifier {
-            vDown.postToPid(processIdentifier)
-            vUp.postToPid(processIdentifier)
-        } else {
-            vDown.post(tap: .cghidEventTap)
-            vUp.post(tap: .cghidEventTap)
-        }
+        vDown.postToPid(processIdentifier)
+        vUp.postToPid(processIdentifier)
     }
 
     private static func showPermissionAlertIfNeeded() {
