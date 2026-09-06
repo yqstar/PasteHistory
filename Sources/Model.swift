@@ -37,11 +37,7 @@ struct ClipItem: Codable, Equatable {
             let base = parts.first.map { ($0 as NSString).lastPathComponent } ?? "文件"
             return parts.count > 1 ? "\(base) 等 \(parts.count) 项" : base
         case .text:
-            var s = (text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            s = s.replacingOccurrences(of: "\n", with: " ")
-                 .replacingOccurrences(of: "\t", with: " ")
-            if s.count > max { s = String(s.prefix(max)) + "…" }
-            return s
+            return oneLinePreview(text ?? "", limit: max)
         }
     }
 }
@@ -102,12 +98,17 @@ func snippetKind(of content: String) -> SnippetKind {
 
 // MARK: - Helpers
 
-let timeFmt: DateFormatter = {
+func oneLinePreview(_ text: String, limit: Int) -> String {
+    let prefix = text.trimmingCharacters(in: .whitespacesAndNewlines).prefix(limit + 1)
+    let line = String(prefix.prefix(limit).map { $0.isNewline || $0 == "\t" ? Character(" ") : $0 })
+    return prefix.count > limit ? line + "…" : line
+}
+
+private let timeFmt: DateFormatter = {
     let f = DateFormatter()
     f.dateFormat = "MM-dd HH:mm"
     return f
 }()
-func timeStr(_ d: Date) -> String { timeFmt.string(from: d) }
 
 private let hourMinFmt: DateFormatter = {
     let f = DateFormatter()
@@ -122,7 +123,7 @@ func relativeTime(_ d: Date) -> String {
     let cal = Calendar.current
     if cal.isDateInToday(d) { return "\(Int(s / 3600)) 小时前" }
     if cal.isDateInYesterday(d) { return "昨天 " + hourMinFmt.string(from: d) }
-    return timeStr(d)
+    return timeFmt.string(from: d)
 }
 
 func kindLabel(_ k: ClipKind) -> String {
@@ -141,10 +142,34 @@ func kindColor(_ k: ClipKind) -> NSColor {
     }
 }
 
+private let transliterationCache: NSCache<NSString, NSString> = {
+    let cache = NSCache<NSString, NSString>()
+    cache.countLimit = 1_024
+    cache.totalCostLimit = 8 * 1_024 * 1_024
+    return cache
+}()
+
 func matchesQuery(_ text: String, _ query: String) -> Bool {
     if text.localizedCaseInsensitiveContains(query) { return true }
+    guard text.unicodeScalars.contains(where: { !$0.isASCII }) else { return false }
+    let key = text as NSString
+    if let cached = transliterationCache.object(forKey: key) {
+        return (cached as String).localizedCaseInsensitiveContains(query)
+    }
     let mutable = NSMutableString(string: text) as CFMutableString
     CFStringTransform(mutable, nil, kCFStringTransformToLatin, false)
     CFStringTransform(mutable, nil, kCFStringTransformStripDiacritics, false)
-    return (mutable as String).localizedCaseInsensitiveContains(query)
+    let transformed = mutable as String
+    transliterationCache.setObject(transformed as NSString, forKey: key,
+                                   cost: (text.utf16.count + transformed.utf16.count) * 2)
+    return transformed.localizedCaseInsensitiveContains(query)
+}
+
+func restoredSelectionIndex(previousID: UUID?, previousIndex: Int,
+                            newIDs: [UUID]) -> Int? {
+    guard !newIDs.isEmpty else { return nil }
+    if let previousID, let index = newIDs.firstIndex(of: previousID) {
+        return index
+    }
+    return min(max(previousIndex, 0), newIDs.count - 1)
 }

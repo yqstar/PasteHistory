@@ -18,6 +18,7 @@ cp "$DIR/Info.plist" "$APP/Contents/Info.plist"
 
 echo "==> Copying app icon"
 cp "$DIR/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
+cp "$DIR/CHANGELOG.md" "$APP/Contents/Resources/CHANGELOG.md"
 
 for ARCH in "${ARCHS[@]}"; do
     echo "==> Compiling Swift ($ARCH, macOS $MIN_MACOS+)"
@@ -39,7 +40,8 @@ lipo -create \
     -output "$APP/Contents/MacOS/PasteHistory"
 
 echo "==> Ad-hoc code signing"
-codesign --force --deep --sign - "$APP" 2>/dev/null || echo "   (codesign skipped)"
+codesign --force --deep --sign - "$APP"
+codesign --verify --deep --strict "$APP"
 
 echo "==> Done: $APP"
 echo "    Run with:  open \"$APP\""

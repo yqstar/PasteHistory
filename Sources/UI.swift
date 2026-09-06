@@ -1,5 +1,103 @@
 import Cocoa
 import Carbon.HIToolbox
+import ImageIO
+
+// Shared, opaque surfaces keep text legible regardless of the desktop behind a window.
+enum UIStyle {
+    static let canvas = NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            ? NSColor(calibratedRed: 0.105, green: 0.115, blue: 0.135, alpha: 1)
+            : NSColor(calibratedRed: 0.97, green: 0.975, blue: 0.985, alpha: 1)
+    }
+    static let surface = NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            ? NSColor(calibratedRed: 0.15, green: 0.16, blue: 0.18, alpha: 1)
+            : .white
+    }
+    static var border: NSColor {
+        .labelColor.withAlphaComponent(NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast ? 0.4 : 0.1)
+    }
+
+    static func readableTint(_ color: NSColor) -> NSColor {
+        NSColor(name: nil) { appearance in
+            var resolved = color
+            appearance.performAsCurrentDrawingAppearance {
+                resolved = color.blended(withFraction: 0.2, of: .labelColor) ?? color
+            }
+            return resolved
+        }
+    }
+
+    static func label(_ text: String, size: CGFloat = 13, weight: NSFont.Weight = .regular,
+                      color: NSColor = .labelColor) -> NSTextField {
+        let label = NSTextField(labelWithString: text)
+        label.font = .systemFont(ofSize: size, weight: weight)
+        label.textColor = color
+        label.translatesAutoresizingMaskIntoConstraints = false
+        return label
+    }
+
+    static func symbol(_ name: String, size: CGFloat = 16, color: NSColor = .secondaryLabelColor) -> NSImageView {
+        let view = NSImageView()
+        view.image = NSImage(systemSymbolName: name, accessibilityDescription: nil)
+        view.symbolConfiguration = .init(pointSize: size, weight: .medium)
+        view.contentTintColor = color
+        view.translatesAutoresizingMaskIntoConstraints = false
+        return view
+    }
+
+    static func separator() -> NSBox {
+        let line = NSBox()
+        line.boxType = .separator
+        line.translatesAutoresizingMaskIntoConstraints = false
+        return line
+    }
+}
+
+class SurfaceView: NSView {
+    var fill: NSColor { didSet { needsDisplay = true } }
+    var border: NSColor { didSet { needsDisplay = true } }
+    let radius: CGFloat
+
+    init(fill: NSColor = UIStyle.surface, border: NSColor = .clear, radius: CGFloat = 10) {
+        self.fill = fill
+        self.border = border
+        self.radius = radius
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: radius, yRadius: radius)
+        fill.setFill()
+        path.fill()
+        border.setStroke()
+        path.lineWidth = 1
+        path.stroke()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
+}
+
+final class FlippedDocumentView: NSView {
+    override var isFlipped: Bool { true }
+}
+
+func loadImageThumbnail(at url: URL, maxSize: CGFloat) -> NSImage? {
+    let options: [CFString: Any] = [
+        kCGImageSourceCreateThumbnailFromImageAlways: true,
+        kCGImageSourceCreateThumbnailWithTransform: true,
+        kCGImageSourceThumbnailMaxPixelSize: Int(maxSize * 2),
+        kCGImageSourceShouldCacheImmediately: true,
+    ]
+    guard let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
+          let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
+    return NSImage(cgImage: image, size: NSSize(width: CGFloat(image.width) / 2, height: CGFloat(image.height) / 2))
+}
 
 func centerWindowOnPointerScreen(_ window: NSWindow) {
     let mouseLocation = NSEvent.mouseLocation
@@ -15,19 +113,11 @@ func centerWindowOnPointerScreen(_ window: NSWindow) {
 
 // MARK: - Pill view
 
-final class PillView: NSView {
+final class PillView: SurfaceView {
     private let label = NSTextField(labelWithString: "")
-    private let fill: NSColor
-    private let stroke: NSColor
 
     init(text: String, font: NSFont, textColor: NSColor, fill: NSColor, stroke: NSColor) {
-        self.fill = fill
-        self.stroke = stroke
-        super.init(frame: .zero)
-        translatesAutoresizingMaskIntoConstraints = false
-        wantsLayer = true
-        layer?.cornerRadius = 4
-        layer?.borderWidth = stroke == .clear ? 0 : 1
+        super.init(fill: fill, border: stroke, radius: 5)
         label.font = font
         label.textColor = textColor
         label.alignment = .center
@@ -46,18 +136,12 @@ final class PillView: NSView {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    override func layout() {
-        super.layout()
-        effectiveAppearance.performAsCurrentDrawingAppearance { [self] in
-            layer?.backgroundColor = fill.cgColor
-            layer?.borderColor = stroke.cgColor
-        }
-    }
 }
 
 // MARK: - Palette data
 
 struct PaletteRow {
+    var id: UUID
     var icon: NSImage?
     var iconIsTemplate: Bool = true
     var iconTint: NSColor? = nil
@@ -67,17 +151,31 @@ struct PaletteRow {
     var badgeColor: NSColor? = nil
     var accessoryBadge: String? = nil
     var accessoryBadgeColor: NSColor? = nil
+    var canSaveAsSnippet = false
 }
 
 // MARK: - Palette cell
 
+private final class PaletteRowView: NSTableRowView {
+    override var interiorBackgroundStyle: NSView.BackgroundStyle { .normal }
+
+    override func drawSelection(in dirtyRect: NSRect) {
+        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 3), xRadius: 10, yRadius: 10)
+        NSColor.controlAccentColor.withAlphaComponent(0.12).setFill()
+        path.fill()
+        NSColor.controlAccentColor.withAlphaComponent(0.25).setStroke()
+        path.lineWidth = 1
+        path.stroke()
+    }
+}
+
 final class PaletteCellView: NSTableCellView {
     private let icon = NSImageView()
+    private let iconBackground = SurfaceView(radius: 9)
     private let titleLabel = NSTextField(labelWithString: "")
     private let subLabel = NSTextField(labelWithString: "")
     private let rowStack: NSStackView
-    private var badgePill: PillView?
-    private var accessoryPill: PillView?
+    private var pills: [PillView] = []
 
     override init(frame frameRect: NSRect) {
         icon.imageScaling = .scaleProportionallyUpOrDown
@@ -86,7 +184,8 @@ final class PaletteCellView: NSTableCellView {
         icon.translatesAutoresizingMaskIntoConstraints = false
         icon.setContentHuggingPriority(.required, for: .horizontal)
 
-        titleLabel.font = .systemFont(ofSize: 13)
+        titleLabel.font = .systemFont(ofSize: 13, weight: .medium)
+        titleLabel.textColor = .labelColor
         titleLabel.lineBreakMode = .byTruncatingTail
         titleLabel.cell?.usesSingleLineMode = true
         titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -100,25 +199,36 @@ final class PaletteCellView: NSTableCellView {
         let textStack = NSStackView(views: [titleLabel, subLabel])
         textStack.orientation = .vertical
         textStack.alignment = .leading
-        textStack.spacing = 2
+        textStack.spacing = 4
+        textStack.setContentHuggingPriority(.init(1), for: .horizontal)
+        textStack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        titleLabel.widthAnchor.constraint(equalTo: textStack.widthAnchor).isActive = true
+        subLabel.widthAnchor.constraint(equalTo: textStack.widthAnchor).isActive = true
 
-        let spacer = NSView()
-        spacer.setContentHuggingPriority(.init(1), for: .horizontal)
-
-        rowStack = NSStackView(views: [icon, textStack, spacer])
+        rowStack = NSStackView(views: [iconBackground, textStack])
         rowStack.orientation = .horizontal
+        rowStack.distribution = .fill
         rowStack.alignment = .centerY
-        rowStack.spacing = 11
+        rowStack.spacing = 12
         rowStack.translatesAutoresizingMaskIntoConstraints = false
+        rowStack.setVisibilityPriority(.mustHold, for: iconBackground)
+        rowStack.setVisibilityPriority(.mustHold, for: textStack)
 
         super.init(frame: frameRect)
 
-        icon.widthAnchor.constraint(equalToConstant: 26).isActive = true
-        icon.heightAnchor.constraint(equalToConstant: 26).isActive = true
+        iconBackground.addSubview(icon)
+        NSLayoutConstraint.activate([
+            iconBackground.widthAnchor.constraint(equalToConstant: 36),
+            iconBackground.heightAnchor.constraint(equalToConstant: 36),
+            icon.centerXAnchor.constraint(equalTo: iconBackground.centerXAnchor),
+            icon.centerYAnchor.constraint(equalTo: iconBackground.centerYAnchor),
+            icon.widthAnchor.constraint(equalToConstant: 22),
+            icon.heightAnchor.constraint(equalToConstant: 22),
+        ])
 
         addSubview(rowStack)
         NSLayoutConstraint.activate([
-            rowStack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            rowStack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
             rowStack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
             rowStack.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
@@ -126,47 +236,33 @@ final class PaletteCellView: NSTableCellView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     func apply(_ row: PaletteRow) {
-        if let img = row.icon {
-            img.isTemplate = row.iconIsTemplate
-            icon.image = img
-            icon.contentTintColor = row.iconIsTemplate ? (row.iconTint ?? .secondaryLabelColor) : nil
-            icon.layer?.cornerRadius = row.iconIsTemplate ? 0 : 5
-        } else {
-            icon.image = nil
-        }
+        row.icon?.isTemplate = row.iconIsTemplate
+        icon.image = row.icon
+        icon.contentTintColor = row.iconIsTemplate ? row.iconTint.map(UIStyle.readableTint) ?? .secondaryLabelColor : nil
+        icon.layer?.cornerRadius = row.iconIsTemplate ? 0 : 3
+        iconBackground.fill = (row.iconTint ?? .secondaryLabelColor).withAlphaComponent(0.09)
         titleLabel.stringValue = row.title
         subLabel.stringValue = row.subtitle
         subLabel.isHidden = row.subtitle.isEmpty
 
-        if let p = accessoryPill {
-            rowStack.removeArrangedSubview(p)
-            p.removeFromSuperview()
-            accessoryPill = nil
+        for pill in pills {
+            rowStack.removeArrangedSubview(pill)
+            pill.removeFromSuperview()
         }
-        if let p = badgePill {
-            rowStack.removeArrangedSubview(p)
-            p.removeFromSuperview()
-            badgePill = nil
+        pills = [(row.badge, row.badgeColor), (row.accessoryBadge, row.accessoryBadgeColor)].compactMap { text, color in
+            text.map { makePill(text: $0, color: color) }
         }
-        if let text = row.badge {
-            let pill = makePill(text: text, color: row.badgeColor)
-            rowStack.addArrangedSubview(pill)
-            badgePill = pill
-        }
-        if let text = row.accessoryBadge {
-            let pill = makePill(text: text, color: row.accessoryBadgeColor)
-            rowStack.addArrangedSubview(pill)
-            accessoryPill = pill
+        pills.forEach {
+            rowStack.addArrangedSubview($0)
+            rowStack.setVisibilityPriority(.mustHold, for: $0)
         }
     }
 
     private func makePill(text: String, color: NSColor?) -> PillView {
-        if let c = color {
-            return PillView(text: text, font: .systemFont(ofSize: 10, weight: .medium),
-                            textColor: c, fill: c.withAlphaComponent(0.16), stroke: .clear)
-        }
         return PillView(text: text, font: .systemFont(ofSize: 10, weight: .medium),
-                        textColor: .secondaryLabelColor, fill: .clear, stroke: .separatorColor)
+                        textColor: color.map(UIStyle.readableTint) ?? .secondaryLabelColor,
+                        fill: color?.withAlphaComponent(0.09) ?? UIStyle.surface,
+                        stroke: color == nil ? UIStyle.border : .clear)
     }
 }
 
@@ -174,19 +270,32 @@ final class PaletteCellView: NSTableCellView {
 
 final class PaletteController: NSObject, NSTableViewDataSource, NSTableViewDelegate,
                                NSTextFieldDelegate, NSWindowDelegate {
+    var title = "粘贴历史"
+    var symbolName = "clock.arrow.circlepath"
     var placeholder = "搜索…"
     var footerHints: [(cap: String, text: String)] = [("↩", "粘贴"), ("esc", "关闭")]
+    var footerSeparatorIndex: Int?
     var emptyText = "暂无内容"
+    var emptyDetail = "复制文本、图片或文件后，会自动出现在这里。"
+    var createActionTitle = "新建"
+    var onCreate: (() -> Void)?
     var provider: ((String) -> [PaletteRow])?
     var onActivate: ((Int) -> Bool)?
     var onDelete: ((Int) -> Void)?
     var onEditRow: ((Int) -> Void)?
+    var onSaveRow: ((Int) -> Void)?
 
     private var window: NSWindow!
     private var searchField: NSTextField!
+    private var searchSurface: SurfaceView!
+    private var countLabel: NSTextField!
     private var tableView: NSTableView!
     private var scroll: NSScrollView!
     private var emptyLabel: NSTextField!
+    private var emptyDetailLabel: NSTextField!
+    private var emptyIcon: NSImageView!
+    private var emptyState: NSStackView!
+    private var footerGroups: [NSView] = []
     private var rows: [PaletteRow] = []
     private var query = ""
     private var deleteMonitor: Any?
@@ -194,6 +303,8 @@ final class PaletteController: NSObject, NSTableViewDataSource, NSTableViewDeleg
     private var isHiding = false
 
     var isVisible: Bool { window?.isVisible ?? false }
+
+    deinit { removeDeleteMonitor() }
 
     func toggle() {
         if isVisible {
@@ -231,7 +342,7 @@ final class PaletteController: NSObject, NSTableViewDataSource, NSTableViewDeleg
         previousApp = nil
         window?.orderOut(nil)
         if reactivatePreviousApplication, let prev, !prev.isTerminated {
-            prev.activate(options: [.activateIgnoringOtherApps])
+            prev.activate()
         } else if reactivatePreviousApplication {
             NSApp.hide(nil)
         }
@@ -241,44 +352,63 @@ final class PaletteController: NSObject, NSTableViewDataSource, NSTableViewDeleg
     func reloadIfVisible() { if isVisible { reload(preserveSelection: true) } }
 
     private func reload(preserveSelection: Bool = false) {
-        let prev = preserveSelection ? (tableView?.selectedRow ?? 0) : 0
+        let previousIndex = preserveSelection ? (tableView?.selectedRow ?? 0) : 0
+        let previousID: UUID? = {
+            guard preserveSelection, rows.indices.contains(previousIndex) else { return nil }
+            return rows[previousIndex].id
+        }()
         rows = provider?(query) ?? []
         tableView?.reloadData()
         let empty = rows.isEmpty
-        emptyLabel?.isHidden = !empty
+        countLabel?.stringValue = query.isEmpty ? "\(rows.count) 条" : "\(rows.count) 条结果"
+        emptyLabel?.stringValue = query.isEmpty ? emptyText : "没有找到相关内容"
+        emptyDetailLabel?.stringValue = query.isEmpty ? emptyDetail : "试试其他关键词，或缩短搜索内容。"
+        emptyIcon?.image = NSImage(systemSymbolName: query.isEmpty ? symbolName : "magnifyingglass",
+                                  accessibilityDescription: nil)
+        emptyState?.isHidden = !empty
         scroll?.isHidden = empty
-        if !empty {
-            let idx = min(max(prev, 0), rows.count - 1)
+        if let idx = restoredSelectionIndex(previousID: previousID,
+                                            previousIndex: previousIndex,
+                                            newIDs: rows.map(\.id)) {
             tableView.selectRowIndexes(IndexSet(integer: idx), byExtendingSelection: false)
             tableView.scrollRowToVisible(idx)
         }
+        updateFooterState()
     }
 
     private func build() {
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 430),
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 480),
                           styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
                           backing: .buffered, defer: false)
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
+        window.title = title
+        window.backgroundColor = UIStyle.canvas
         window.isMovableByWindowBackground = true
         window.isReleasedWhenClosed = false
         window.level = .floating
-        window.minSize = NSSize(width: 440, height: 280)
+        window.minSize = NSSize(width: 440, height: 320)
         window.delegate = self
         window.standardWindowButton(.closeButton)?.isHidden = true
         window.standardWindowButton(.miniaturizeButton)?.isHidden = true
         window.standardWindowButton(.zoomButton)?.isHidden = true
 
-        let content = NSVisualEffectView()
-        content.material = .popover
-        content.blendingMode = .behindWindow
-        content.state = .active
+        let content = SurfaceView(fill: UIStyle.canvas, radius: 0)
         window.contentView = content
+
+        let headingIcon = UIStyle.symbol(symbolName, size: 15, color: .controlAccentColor)
+        let heading = UIStyle.label(title, size: 13, weight: .semibold)
+        countLabel = UIStyle.label("", size: 11, color: .secondaryLabelColor)
+        let headingStack = NSStackView(views: [headingIcon, heading, countLabel])
+        headingStack.alignment = .centerY
+        headingStack.spacing = 8
+        headingStack.translatesAutoresizingMaskIntoConstraints = false
+        headingIcon.widthAnchor.constraint(equalToConstant: 18).isActive = true
 
         searchField = NSTextField()
         searchField.placeholderString = placeholder
         searchField.delegate = self
-        searchField.font = .systemFont(ofSize: 20)
+        searchField.font = .systemFont(ofSize: 15)
         searchField.isBordered = false
         searchField.isBezeled = false
         searchField.drawsBackground = false
@@ -288,17 +418,13 @@ final class PaletteController: NSObject, NSTableViewDataSource, NSTableViewDeleg
         searchField.cell?.wraps = false
         searchField.cell?.isScrollable = true
         searchField.translatesAutoresizingMaskIntoConstraints = false
+        searchField.setAccessibilityLabel(placeholder)
 
-        let glyph = NSImageView()
-        glyph.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: nil)
-        glyph.image?.isTemplate = true
-        glyph.contentTintColor = .secondaryLabelColor
-        glyph.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 17, weight: .regular)
-        glyph.translatesAutoresizingMaskIntoConstraints = false
-
-        let topDivider = NSBox()
-        topDivider.boxType = .separator
-        topDivider.translatesAutoresizingMaskIntoConstraints = false
+        let glyph = UIStyle.symbol("magnifyingglass", size: 15)
+        searchSurface = SurfaceView(border: UIStyle.border)
+        searchSurface.addSubview(glyph)
+        searchSurface.addSubview(searchField)
+        let topDivider = UIStyle.separator()
 
         tableView = NSTableView()
         let col = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("main"))
@@ -307,75 +433,130 @@ final class PaletteController: NSObject, NSTableViewDataSource, NSTableViewDeleg
         tableView.headerView = nil
         tableView.dataSource = self
         tableView.delegate = self
-        tableView.rowHeight = 48
+        tableView.rowHeight = 60
+        tableView.intercellSpacing = .zero
         tableView.backgroundColor = .clear
-        tableView.style = .inset
+        tableView.style = .plain
         tableView.selectionHighlightStyle = .regular
         tableView.target = self
         tableView.doubleAction = #selector(activateDoubleClick)
+        tableView.setAccessibilityLabel(title)
 
         scroll = NSScrollView()
         scroll.drawsBackground = false
         scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
         scroll.documentView = tableView
         scroll.translatesAutoresizingMaskIntoConstraints = false
 
-        emptyLabel = NSTextField(labelWithString: emptyText)
-        emptyLabel.font = .systemFont(ofSize: 13)
-        emptyLabel.textColor = .tertiaryLabelColor
+        emptyIcon = UIStyle.symbol(symbolName, size: 28, color: .tertiaryLabelColor)
+        emptyIcon.heightAnchor.constraint(equalToConstant: 36).isActive = true
+        emptyLabel = UIStyle.label(emptyText, size: 14, weight: .medium)
         emptyLabel.alignment = .center
-        emptyLabel.isHidden = true
-        emptyLabel.translatesAutoresizingMaskIntoConstraints = false
+        emptyDetailLabel = UIStyle.label(emptyDetail, size: 12, color: .secondaryLabelColor)
+        emptyDetailLabel.alignment = .center
+        emptyState = NSStackView(views: [emptyIcon, emptyLabel, emptyDetailLabel])
+        emptyState.orientation = .vertical
+        emptyState.alignment = .centerX
+        emptyState.spacing = 8
+        emptyState.setCustomSpacing(14, after: emptyIcon)
+        emptyState.setCustomSpacing(18, after: emptyDetailLabel)
+        emptyState.isHidden = true
+        emptyState.translatesAutoresizingMaskIntoConstraints = false
+        if onCreate != nil { emptyState.addArrangedSubview(makeCreateButton()) }
 
-        let bottomDivider = NSBox()
-        bottomDivider.boxType = .separator
-        bottomDivider.translatesAutoresizingMaskIntoConstraints = false
+        let bottomDivider = UIStyle.separator()
 
         let footer = buildFooter()
         footer.translatesAutoresizingMaskIntoConstraints = false
 
-        content.addSubview(glyph)
-        content.addSubview(searchField)
+        content.addSubview(headingStack)
+        content.addSubview(searchSurface)
         content.addSubview(topDivider)
         content.addSubview(scroll)
-        content.addSubview(emptyLabel)
+        content.addSubview(emptyState)
         content.addSubview(bottomDivider)
         content.addSubview(footer)
 
         NSLayoutConstraint.activate([
-            glyph.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
-            glyph.centerYAnchor.constraint(equalTo: searchField.centerYAnchor),
-            glyph.widthAnchor.constraint(equalToConstant: 20),
+            headingStack.topAnchor.constraint(equalTo: content.topAnchor, constant: 18),
+            headingStack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
+            headingStack.heightAnchor.constraint(equalToConstant: 24),
+            searchSurface.topAnchor.constraint(equalTo: headingStack.bottomAnchor, constant: 12),
+            searchSurface.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
+            searchSurface.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
+            searchSurface.heightAnchor.constraint(equalToConstant: 40),
+            glyph.leadingAnchor.constraint(equalTo: searchSurface.leadingAnchor, constant: 12),
+            glyph.centerYAnchor.constraint(equalTo: searchSurface.centerYAnchor),
+            glyph.widthAnchor.constraint(equalToConstant: 18),
+            searchField.centerYAnchor.constraint(equalTo: searchSurface.centerYAnchor),
+            searchField.leadingAnchor.constraint(equalTo: glyph.trailingAnchor, constant: 8),
+            searchField.trailingAnchor.constraint(equalTo: searchSurface.trailingAnchor, constant: -12),
 
-            searchField.topAnchor.constraint(equalTo: content.topAnchor, constant: 18),
-            searchField.leadingAnchor.constraint(equalTo: glyph.trailingAnchor, constant: 10),
-            searchField.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -18),
-
-            topDivider.topAnchor.constraint(equalTo: searchField.bottomAnchor, constant: 14),
+            topDivider.topAnchor.constraint(equalTo: searchSurface.bottomAnchor, constant: 16),
             topDivider.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             topDivider.trailingAnchor.constraint(equalTo: content.trailingAnchor),
 
-            scroll.topAnchor.constraint(equalTo: topDivider.bottomAnchor, constant: 4),
-            scroll.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 8),
-            scroll.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -8),
-            scroll.bottomAnchor.constraint(equalTo: bottomDivider.topAnchor, constant: -4),
+            scroll.topAnchor.constraint(equalTo: topDivider.bottomAnchor, constant: 8),
+            scroll.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12),
+            scroll.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12),
+            scroll.bottomAnchor.constraint(equalTo: bottomDivider.topAnchor, constant: -8),
 
-            emptyLabel.centerXAnchor.constraint(equalTo: scroll.centerXAnchor),
-            emptyLabel.centerYAnchor.constraint(equalTo: scroll.centerYAnchor),
+            emptyState.centerXAnchor.constraint(equalTo: scroll.centerXAnchor),
+            emptyState.centerYAnchor.constraint(equalTo: scroll.centerYAnchor),
+            emptyState.leadingAnchor.constraint(greaterThanOrEqualTo: scroll.leadingAnchor, constant: 12),
+            emptyState.trailingAnchor.constraint(lessThanOrEqualTo: scroll.trailingAnchor, constant: -12),
 
             bottomDivider.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             bottomDivider.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            bottomDivider.bottomAnchor.constraint(equalTo: footer.topAnchor, constant: -8),
+            bottomDivider.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -46),
 
             footer.centerXAnchor.constraint(equalTo: content.centerXAnchor),
-            footer.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -11),
+            footer.centerYAnchor.constraint(equalTo: bottomDivider.bottomAnchor, constant: 23),
+            footer.leadingAnchor.constraint(greaterThanOrEqualTo: content.leadingAnchor, constant: 12),
+            footer.trailingAnchor.constraint(lessThanOrEqualTo: content.trailingAnchor, constant: -12),
         ])
+        if onCreate != nil {
+            let createButton = makeCreateButton()
+            content.addSubview(createButton)
+            NSLayoutConstraint.activate([
+                createButton.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
+                createButton.centerYAnchor.constraint(equalTo: headingStack.centerYAnchor),
+                headingStack.trailingAnchor.constraint(lessThanOrEqualTo: createButton.leadingAnchor, constant: -12),
+            ])
+        } else {
+            headingStack.trailingAnchor.constraint(lessThanOrEqualTo: content.trailingAnchor, constant: -20).isActive = true
+        }
     }
 
+    private func makeCreateButton() -> NSButton {
+        let button = NSButton(title: createActionTitle, target: self, action: #selector(createItem))
+        button.bezelStyle = .rounded
+        button.image = NSImage(systemSymbolName: "plus", accessibilityDescription: nil)
+        button.imagePosition = .imageLeading
+        button.controlSize = .small
+        button.font = .systemFont(ofSize: 12, weight: .medium)
+        button.contentTintColor = .controlAccentColor
+        button.toolTip = "\(createActionTitle)（⌘N）"
+        button.setContentHuggingPriority(.required, for: .horizontal)
+        button.setContentCompressionResistancePriority(.required, for: .horizontal)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        return button
+    }
+
+    @objc private func createItem() { onCreate?() }
+
     private func buildFooter() -> NSView {
-        let groups: [NSView] = footerHints.map { hint in
+        var groups: [NSView] = []
+        for (index, hint) in footerHints.enumerated() {
+            if footerSeparatorIndex == index {
+                let separator = UIStyle.separator()
+                separator.widthAnchor.constraint(equalToConstant: 1).isActive = true
+                separator.heightAnchor.constraint(equalToConstant: 18).isActive = true
+                groups.append(separator)
+            }
             let cap = PillView(text: hint.cap, font: .systemFont(ofSize: 11, weight: .medium),
-                               textColor: .secondaryLabelColor, fill: .clear, stroke: .separatorColor)
+                               textColor: .secondaryLabelColor, fill: UIStyle.surface, stroke: UIStyle.border)
             let lbl = NSTextField(labelWithString: hint.text)
             lbl.font = .systemFont(ofSize: 11)
             lbl.textColor = .secondaryLabelColor
@@ -383,19 +564,54 @@ final class PaletteController: NSObject, NSTableViewDataSource, NSTableViewDeleg
             s.orientation = .horizontal
             s.alignment = .centerY
             s.spacing = 5
-            return s
+            groups.append(s)
+            footerGroups.append(s)
         }
         let footer = NSStackView(views: groups)
         footer.orientation = .horizontal
         footer.alignment = .centerY
-        footer.spacing = 16
+        footer.spacing = 12
         return footer
     }
 
+    private func updateFooterState() {
+        let selected = tableView?.selectedRow ?? -1
+        let row = rows.indices.contains(selected) ? rows[selected] : nil
+        for (hint, group) in zip(footerHints, footerGroups) {
+            let enabled: Bool
+            switch hint.cap {
+            case "↩", "⌘⌫", "⌘E": enabled = row != nil
+            case "⌘S": enabled = row?.canSaveAsSnippet == true
+            default: enabled = true
+            }
+            group.alphaValue = enabled ? 1 : 0.4
+        }
+    }
+
+    func controlTextDidBeginEditing(_ obj: Notification) {
+        searchSurface.border = .controlAccentColor.withAlphaComponent(0.45)
+    }
+
+    func controlTextDidEndEditing(_ obj: Notification) {
+        searchSurface.border = UIStyle.border
+    }
+
+    func tableViewSelectionDidChange(_ notification: Notification) { updateFooterState() }
+
+    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
+        PaletteRowView()
+    }
+
     private func installDeleteMonitor() {
-        guard deleteMonitor == nil, (onDelete != nil || onEditRow != nil) else { return }
+        guard deleteMonitor == nil,
+              (onCreate != nil || onDelete != nil || onEditRow != nil || onSaveRow != nil) else { return }
         deleteMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
-            guard let self = self else { return e }
+            guard let self = self, self.window.isKeyWindow else { return e }
+            let actionModifiers = e.modifierFlags.intersection([.command, .control, .option, .shift])
+            if actionModifiers == .command, Int(e.keyCode) == kVK_ANSI_N, let onCreate = self.onCreate {
+                onCreate()
+                return nil
+            }
             let row = self.tableView.selectedRow
             guard row >= 0, row < self.rows.count else { return e }
             if e.modifierFlags.contains(.command), Int(e.keyCode) == kVK_Delete {
@@ -403,8 +619,12 @@ final class PaletteController: NSObject, NSTableViewDataSource, NSTableViewDeleg
                 self.reload(preserveSelection: true)
                 return nil
             }
-            if e.modifierFlags.contains(.command), e.charactersIgnoringModifiers == "e" {
-                self.onEditRow?(row)
+            if actionModifiers == .command, e.charactersIgnoringModifiers == "e", let onEdit = self.onEditRow {
+                onEdit(row)
+                return nil
+            }
+            if actionModifiers == .command, Int(e.keyCode) == kVK_ANSI_S, let onSave = self.onSaveRow {
+                onSave(row)
                 return nil
             }
             return e

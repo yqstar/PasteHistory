@@ -33,9 +33,11 @@ jobs:
 
       - name: Resolve release version
         shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
         run: |
           if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
-            TAG="${{ inputs.tag }}"
+            TAG="$RELEASE_TAG"
           else
             TAG="$GITHUB_REF_NAME"
           fi
@@ -51,6 +53,18 @@ jobs:
           fi
 
           VERSION="${TAG#v}"
+          # Historical tags predate the bundled changelog; keep manual rebuilds working.
+          if [[ -f Tools/release-notes.py ]]; then
+            SOURCE_VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" Info.plist)
+            if [[ "$SOURCE_VERSION" != "$VERSION" ]]; then
+              echo "Info.plist version $SOURCE_VERSION does not match release tag $TAG"
+              exit 1
+            fi
+            python3 Tools/release-notes.py "$VERSION" > "$RUNNER_TEMP/pastehistory-release-notes.md"
+          else
+            : > "$RUNNER_TEMP/pastehistory-release-notes.md"
+          fi
+
           /usr/libexec/PlistBuddy \
             -c "Set :CFBundleShortVersionString $VERSION" \
             Info.plist
@@ -60,6 +74,9 @@ jobs:
 
           echo "TAG=$TAG" >> "$GITHUB_ENV"
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Run logic tests
+        run: bash test.sh
 
       - name: Build universal app
         shell: bash
@@ -97,5 +114,6 @@ jobs:
             "build/$ASSET#PasteHistory for macOS (Universal)" \
             "build/$ASSET.sha256#SHA-256 checksum" \
             --verify-tag \
+            --notes-file "$RUNNER_TEMP/pastehistory-release-notes.md" \
             --generate-notes \
             --title "PasteHistory $TAG"
