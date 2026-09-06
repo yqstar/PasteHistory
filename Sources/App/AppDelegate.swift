@@ -20,7 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private lazy var updateController = UpdateWindowController()
     private var historyHotKeyID: UInt32?
     private var snippetSummonHotKeyID: UInt32?
-    private var snippetHotKeyIDs: [UUID: UInt32] = [:]
+    private let snippetHotKeys = SnippetHotKeyRegistry()
     private var reportedDataIssues = Set<String>()
     private var currentConfig = HotKeyConfig.history
     private var currentSnippetSummonConfig = HotKeyConfig.snippet
@@ -110,48 +110,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @discardableResult
     private func applyHotKey(_ config: HotKeyConfig) -> Bool {
-        if let id = historyHotKeyID { HotKeyCenter.shared.unregister(id); historyHotKeyID = nil }
-        if let id = HotKeyCenter.shared.register(keyCode: config.keyCode, modifiers: config.carbonModifiers,
-                                                 callback: { [weak self] in self?.windowController.toggle() }) {
-            historyHotKeyID = id
+        let result = HotKeyCenter.shared.replace(historyHotKeyID, current: currentConfig, with: config) {
+            [weak self] in self?.windowController.toggle()
+        }
+        historyHotKeyID = result.id
+        if result.applied {
             currentConfig = config
             HotKeyConfig.history = config
-            return true
         }
-        historyHotKeyID = HotKeyCenter.shared.register(keyCode: currentConfig.keyCode,
-                                                       modifiers: currentConfig.carbonModifiers,
-                                                       callback: { [weak self] in self?.windowController.toggle() })
-        return false
+        return result.applied
     }
 
     @discardableResult
     private func applySnippetSummonHotKey(_ config: HotKeyConfig) -> Bool {
-        if let id = snippetSummonHotKeyID { HotKeyCenter.shared.unregister(id); snippetSummonHotKeyID = nil }
-        if let id = HotKeyCenter.shared.register(keyCode: config.keyCode, modifiers: config.carbonModifiers,
-                                                 callback: { [weak self] in self?.snippetPicker.toggle() }) {
-            snippetSummonHotKeyID = id
+        let result = HotKeyCenter.shared.replace(snippetSummonHotKeyID, current: currentSnippetSummonConfig,
+                                                 with: config) { [weak self] in self?.snippetPicker.toggle() }
+        snippetSummonHotKeyID = result.id
+        if result.applied {
             currentSnippetSummonConfig = config
             HotKeyConfig.snippet = config
-            return true
         }
-        snippetSummonHotKeyID = HotKeyCenter.shared.register(keyCode: currentSnippetSummonConfig.keyCode,
-                                                             modifiers: currentSnippetSummonConfig.carbonModifiers,
-                                                             callback: { [weak self] in self?.snippetPicker.toggle() })
-        return false
+        return result.applied
     }
 
     private func reloadSnippetHotKeys() {
-        for (_, id) in snippetHotKeyIDs { HotKeyCenter.shared.unregister(id) }
-        snippetHotKeyIDs.removeAll()
-        for snip in snippetStore.items {
-            guard let hk = snip.hotKey else { continue }
-            let sid = snip.id
-            if let token = HotKeyCenter.shared.register(keyCode: hk.keyCode, modifiers: hk.carbonModifiers,
-                                                        callback: { [weak self] in self?.pasteSnippet(id: sid, after: 0.03) }) {
-                snippetHotKeyIDs[sid] = token
-            }
+        snippetHotKeys.update(snippetStore.items) { [weak self] id in
+            self?.pasteSnippet(id: id, after: 0.03)
         }
-        snippetPicker?.updateHotKeyRegistration(activeIDs: Set(snippetHotKeyIDs.keys))
+        snippetPicker?.updateHotKeyRegistration(activeIDs: snippetHotKeys.activeIDs)
     }
 
     private func presentDataIssue(_ message: String) {
@@ -249,7 +235,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let name = snip.title.isEmpty ? "未命名" : snip.title
         let label: String
         if let hotKey = snip.hotKey {
-            let status = snippetHotKeyIDs[snip.id] == nil ? "\(hotKey.display)（冲突）" : hotKey.display
+            let status = snippetHotKeys.activeIDs.contains(snip.id) ? hotKey.display : "\(hotKey.display)（冲突）"
             label = "\(name)   \(status)"
         } else {
             label = name
@@ -257,7 +243,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let mi = NSMenuItem(title: label, action: #selector(pasteSnippet(_:)), keyEquivalent: "")
         mi.target = self
         mi.representedObject = snip.id
-        if snip.hotKey != nil, snippetHotKeyIDs[snip.id] == nil {
+        if snip.hotKey != nil, !snippetHotKeys.activeIDs.contains(snip.id) {
             mi.toolTip = "快捷键注册失败，请修改与其他快捷键冲突的组合"
         }
         let kind = snippetKind(of: snip.content)

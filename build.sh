@@ -1,12 +1,12 @@
 #!/bin/bash
 # Build a universal PasteHistory.app using the command-line Swift toolchain.
-set -e
+set -euo pipefail
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$DIR/Tools/swift-common.sh"
 APP="$DIR/build/PasteHistory.app"
 INTERMEDIATES="$DIR/build/.intermediates"
 MIN_MACOS="13.0"
-SDK_PATH="$(xcrun --sdk macosx --show-sdk-path)"
 ARCHS=(arm64 x86_64)
 
 echo "==> Cleaning previous app bundle"
@@ -23,13 +23,11 @@ cp "$DIR/CHANGELOG.md" "$APP/Contents/Resources/CHANGELOG.md"
 for ARCH in "${ARCHS[@]}"; do
     echo "==> Compiling Swift ($ARCH, macOS $MIN_MACOS+)"
     mkdir -p "$INTERMEDIATES/ModuleCache/$ARCH"
-    swiftc -O -whole-module-optimization -swift-version 5 \
+    swiftc -O -whole-module-optimization "${PH_SWIFT_FLAGS[@]}" \
         -target "$ARCH-apple-macosx$MIN_MACOS" \
-        -sdk "$SDK_PATH" \
         -module-cache-path "$INTERMEDIATES/ModuleCache/$ARCH" \
         -o "$INTERMEDIATES/PasteHistory-$ARCH" \
-        "$DIR/main.swift" \
-        "$DIR"/Sources/*.swift \
+        "$PH_APP_ENTRY" "${PH_LIBRARY_SOURCES[@]}" \
         -framework Cocoa
 done
 

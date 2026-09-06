@@ -65,6 +65,30 @@ open build/PasteHistory.app
 
 产物位于 `build/PasteHistory.dmg`。
 
+## 项目结构
+
+```text
+Sources/
+├── App/       # 应用入口、菜单栏和模块组装
+├── Core/      # 数据模型、搜索、持久化和更新检查
+├── macOS/     # 剪贴板、自动粘贴、全局快捷键和开机启动
+└── UI/        # 公共组件、选择器、片段编辑器、设置与更新窗口
+Tests/
+├── Logic/     # 数据、搜索、快捷键注册和更新检查测试
+└── SnippetUI/ # 使用临时数据的 AppKit 界面测试
+Tools/
+├── swift-common.sh # 构建、测试和截图共用的编译配置
+├── Screenshots/    # 文档截图工具
+└── release-notes.py
+Resources/          # 应用图标
+docs/screenshots/   # README 使用的截图
+build/              # 本机构建产物与测试截图，不提交到 Git
+```
+
+根目录保留 `build.sh`、`test.sh`、`test-ui.sh`、`screenshots.sh` 和 `make-dmg.sh` 作为命令入口。应用构建、界面测试和截图工具会递归收集 `Sources` 中的 Swift 文件，并分别使用自己的 `main.swift`；逻辑测试只编译核心文件与快捷键模块。
+
+界面颜色和图标定义集中在 `UI/Components.swift`，系统快捷键注册和配置保存在 `macOS/HotKey.swift`。目前仍是单个 macOS 编译模块，片段数据保留原有 Carbon 快捷键格式。
+
 ## 功能
 
 - **自动记录剪贴板**：支持文本、图片和文件路径，重复文本或文件只移动到最前，不重复新增。
@@ -214,8 +238,8 @@ open build/PasteHistory.app
 发布前，将 `Info.plist` 中的版本号更新为目标版本，并在 `CHANGELOG.md` 最上方添加该版本的记录与发布日期。工作流会校验标签和应用版本一致、对应说明非空。发布示例：
 
 ```bash
-git tag -a v1.0.4 -m "PasteHistory v1.0.4"
-git push origin v1.0.4
+git tag -a v1.0.5 -m "PasteHistory v1.0.5"
+git push origin v1.0.5
 ```
 
 ## 说明

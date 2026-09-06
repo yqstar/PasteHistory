@@ -35,6 +35,113 @@ private func testSelectionRestoration() {
           "空结果不应产生选中行")
 }
 
+private final class HotKeyTestCenter: HotKeyRegistering {
+    struct Registration {
+        let keyCode: UInt32
+        let modifiers: UInt32
+        let callback: () -> Void
+    }
+    private(set) var registrations: [UInt32: Registration] = [:]
+    private(set) var attempts = 0
+    private var nextID: UInt32 = 1
+
+    func register(keyCode: UInt32, modifiers: UInt32, callback: @escaping () -> Void) -> UInt32? {
+        attempts += 1
+        guard !registrations.values.contains(where: { $0.keyCode == keyCode && $0.modifiers == modifiers }) else {
+            return nil
+        }
+        let token = nextID
+        nextID += 1
+        registrations[token] = Registration(keyCode: keyCode, modifiers: modifiers, callback: callback)
+        return token
+    }
+
+    func unregister(_ id: UInt32) { registrations[id] = nil }
+
+    func trigger(_ config: HotKeyConfig) {
+        registrations.values.first {
+            $0.keyCode == config.keyCode && $0.modifiers == config.carbonModifiers
+        }?.callback()
+    }
+}
+
+private func testHotKeyReplacement() {
+    let center = HotKeyTestCenter()
+    var activations = 0
+    let initial = center.replace(nil, current: .historyDefault, with: .historyDefault) { activations += 1 }
+    check(initial.applied && initial.id != nil, "启动时应注册选择器快捷键")
+    let unchanged = center.replace(initial.id, current: .historyDefault, with: .historyDefault) { activations += 1 }
+    check(unchanged.id == initial.id && center.attempts == 1, "重复应用同一组合应保留已有注册")
+
+    let blocker = center.register(keyCode: HotKeyConfig.snippetDefault.keyCode,
+                                  modifiers: HotKeyConfig.snippetDefault.carbonModifiers, callback: {})!
+    let conflict = center.replace(unchanged.id, current: .historyDefault, with: .snippetDefault) { activations += 1 }
+    check(!conflict.applied && conflict.id != nil, "新快捷键冲突时应恢复原组合")
+    center.trigger(.historyDefault)
+    check(activations == 1, "冲突回退后的原快捷键仍能触发操作")
+
+    center.unregister(blocker)
+    let changed = center.replace(conflict.id, current: .historyDefault, with: .snippetDefault) { activations += 1 }
+    center.trigger(.historyDefault)
+    center.trigger(.snippetDefault)
+    check(changed.applied && activations == 2 && center.registrations.count == 1,
+          "成功修改后应仅保留新组合的回调")
+}
+
+private func testSnippetHotKeyUpdates() {
+    let center = HotKeyTestCenter()
+    do {
+        let registry = SnippetHotKeyRegistry(center: center)
+        var first = Snippet(id: UUID(), title: "A", content: "alpha", hotKey: .historyDefault)
+        var second = Snippet(id: UUID(), title: "B", content: "beta", hotKey: .snippetDefault)
+        var activated: UUID?
+        let activate: (UUID) -> Void = { activated = $0 }
+        registry.update([first, second], onActivate: activate)
+        let originalTokens = Set(center.registrations.keys)
+        first.title = "Renamed"
+        first.content = "edited alpha"
+        registry.update([second, first], onActivate: activate)
+        check(center.attempts == 2 && Set(center.registrations.keys) == originalTokens,
+              "编辑正文、标题或排序时不应重新注册未变更的快捷键")
+
+        first.hotKey = .snippetDefault
+        second.hotKey = .historyDefault
+        registry.update([first, second], onActivate: activate)
+        center.trigger(.snippetDefault)
+        check(registry.activeIDs == Set([first.id, second.id]) && activated == first.id,
+              "两个片段互换组合后，应注册成功并指向正确片段")
+        center.trigger(.historyDefault)
+        check(activated == second.id, "互换后的另一个组合应指向第二个片段")
+
+        registry.update([second], onActivate: activate)
+        check(registry.activeIDs == Set([second.id]) && center.registrations.count == 1,
+              "删除片段时应释放它的快捷键")
+        let blocker = center.register(keyCode: HotKeyConfig.snippetDefault.keyCode,
+                                      modifiers: HotKeyConfig.snippetDefault.carbonModifiers, callback: {})!
+        registry.update([first, second], onActivate: activate)
+        check(registry.activeIDs == Set([second.id]), "冲突片段不应显示为快捷键已生效")
+        center.unregister(blocker)
+        registry.update([first, second], onActivate: activate)
+        check(registry.activeIDs == Set([first.id, second.id]), "冲突释放后应重试失败的注册")
+
+        second.hotKey = nil
+        registry.update([first, second], onActivate: activate)
+        check(registry.activeIDs == Set([first.id]) && center.registrations.count == 1,
+              "移除快捷键配置时应释放原注册")
+    }
+    check(center.registrations.isEmpty, "注册管理器释放时应注销剩余快捷键")
+}
+
+private func testTextStatistics() {
+    for (text, lines, characters) in [("", 0, 0), ("abc", 1, 3), ("a\n", 2, 2),
+                                     ("a\r\nb", 2, 3), ("a\rb", 2, 3),
+                                     ("👨‍👩‍👧‍👦e\u{301}\n中\n", 3, 5)] {
+        let statistics = TextStatistics(text)
+        check(statistics.lineCount == lines && statistics.characterCount == characters,
+              "文本统计应正确处理空内容、换行和完整 Unicode 字符：\(text.debugDescription)")
+    }
+}
+
 private func testHistoryLimits() throws {
     let directory = try makeTemporaryDirectory()
     defer { try? FileManager.default.removeItem(at: directory) }
@@ -332,6 +439,9 @@ private func testUpdateTransport() {
 
 do {
     testSelectionRestoration()
+    testHotKeyReplacement()
+    testSnippetHotKeyUpdates()
+    testTextStatistics()
     try testHistoryLimits()
     try testSnippetValidationAndDeduplication()
     try testSnippetBackupRecovery()

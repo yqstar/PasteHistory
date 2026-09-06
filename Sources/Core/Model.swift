@@ -1,4 +1,5 @@
-import Cocoa
+import Foundation
+import CoreFoundation
 
 // MARK: - Notifications
 
@@ -59,20 +60,6 @@ enum SnippetKind {
         case .text: return "文本"
         }
     }
-    var color: NSColor {
-        switch self {
-        case .url: return .systemTeal
-        case .code: return .systemIndigo
-        case .text: return .systemBlue
-        }
-    }
-    var symbolName: String {
-        switch self {
-        case .url: return "link"
-        case .code: return "chevron.left.forwardslash.chevron.right"
-        case .text: return "text.alignleft"
-        }
-    }
 }
 
 func snippetKind(of content: String) -> SnippetKind {
@@ -97,6 +84,22 @@ func snippetKind(of content: String) -> SnippetKind {
 }
 
 // MARK: - Helpers
+
+struct TextStatistics {
+    let lineCount: Int
+    let characterCount: Int
+
+    init(_ text: String) {
+        var lines = 1
+        var characters = 0
+        for character in text {
+            characters += 1
+            if character.isNewline { lines += 1 }
+        }
+        lineCount = characters == 0 ? 0 : lines
+        characterCount = characters
+    }
+}
 
 func oneLinePreview(_ text: String, limit: Int) -> String {
     let prefix = text.trimmingCharacters(in: .whitespacesAndNewlines).prefix(limit + 1)
@@ -131,14 +134,6 @@ func kindLabel(_ k: ClipKind) -> String {
     case .text: return "文本"
     case .image: return "图片"
     case .file: return "文件"
-    }
-}
-
-func kindColor(_ k: ClipKind) -> NSColor {
-    switch k {
-    case .text: return .systemBlue
-    case .image: return .systemPurple
-    case .file: return .systemTeal
     }
 }
 

@@ -3,9 +3,29 @@ import Carbon.HIToolbox
 
 // MARK: - Global hotkey (Carbon — no Accessibility permission needed)
 
+protocol HotKeyRegistering: AnyObject {
+    func register(keyCode: UInt32, modifiers: UInt32, callback: @escaping () -> Void) -> UInt32?
+    func unregister(_ id: UInt32)
+}
+
+extension HotKeyRegistering {
+    // Both palette shortcuts use the same rollback behavior on conflicts.
+    func replace(_ id: UInt32?, current: HotKeyConfig, with config: HotKeyConfig,
+                 callback: @escaping () -> Void) -> (id: UInt32?, applied: Bool) {
+        if let id, current == config { return (id, true) }
+        if let id { unregister(id) }
+        if let replacement = register(keyCode: config.keyCode, modifiers: config.carbonModifiers,
+                                      callback: callback) {
+            return (replacement, true)
+        }
+        return (register(keyCode: current.keyCode, modifiers: current.carbonModifiers,
+                         callback: callback), false)
+    }
+}
+
 private let hotKeySignature: OSType = 0x50485459 // "PHTY"
 
-final class HotKeyCenter {
+final class HotKeyCenter: HotKeyRegistering {
     static let shared = HotKeyCenter()
 
     private var callbacks: [UInt32: () -> Void] = [:]
@@ -53,78 +73,40 @@ final class HotKeyCenter {
     }
 }
 
-// MARK: - Hotkey recorder button
+// Keeps unchanged registrations alive when snippet titles, bodies, or order change.
+final class SnippetHotKeyRegistry {
+    private let center: HotKeyRegistering
+    private var bindings: [UUID: (config: HotKeyConfig, token: UInt32)] = [:]
+    private(set) var activeIDs = Set<UUID>()
 
-final class HotKeyRecorderButton: NSButton {
-    var config: HotKeyConfig? { didSet { if !recording { updateTitle() } } }
-    var onChange: ((HotKeyConfig) -> Bool)?
-    var onStatus: ((String) -> Void)?
-
-    private var recording = false
-    private var monitor: Any?
-    private static weak var activeRecorder: HotKeyRecorderButton?
-
-    convenience init() {
-        self.init(frame: .zero)
-        bezelStyle = .rounded
-        font = .monospacedSystemFont(ofSize: 12, weight: .medium)
-        setButtonType(.momentaryPushIn)
-        target = self
-        action = #selector(toggle)
-        translatesAutoresizingMaskIntoConstraints = false
-        updateTitle()
-    }
-
-    private func updateTitle() {
-        title = recording ? "按下组合键…" : (config?.display ?? "未设置")
-        contentTintColor = recording ? .controlAccentColor : .labelColor
-        toolTip = recording ? "按下新组合键，或按 Esc 取消" : "点击录制快捷键"
-    }
-
-    @objc private func toggle() { recording ? stop() : start() }
-
-    private func start() {
-        Self.activeRecorder?.stop()
-        Self.activeRecorder = self
-        recording = true
-        updateTitle()
-        onStatus?("正在录制：请按下组合键（Esc 取消）")
-        monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] e in
-            guard let self, self.window?.isKeyWindow == true else { return e }
-            self.handle(e)
-            return nil
-        }
-    }
-
-    func stop() {
-        if Self.activeRecorder === self { Self.activeRecorder = nil }
-        recording = false
-        if let m = monitor { NSEvent.removeMonitor(m); monitor = nil }
-        updateTitle()
+    init(center: HotKeyRegistering = HotKeyCenter.shared) {
+        self.center = center
     }
 
     deinit {
-        if let monitor { NSEvent.removeMonitor(monitor) }
+        for binding in bindings.values { center.unregister(binding.token) }
     }
 
-    private func handle(_ e: NSEvent) {
-        if Int(e.keyCode) == kVK_Escape { stop(); onStatus?("已取消"); return }
-        let flags = e.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        guard flags.contains(.command) || flags.contains(.option) || flags.contains(.control) else {
-            onStatus?("组合键需包含 ⌘ / ⌥ / ⌃ 之一")
-            return
+    func update(_ snippets: [Snippet], onActivate: @escaping (UUID) -> Void) {
+        let desired = Dictionary(snippets.compactMap { snippet in
+            snippet.hotKey.map { (snippet.id, $0) }
+        }, uniquingKeysWith: { first, _ in first })
+
+        // Release all changed keys before registering replacements, so swaps work.
+        for (id, binding) in bindings where desired[id] != binding.config {
+            center.unregister(binding.token)
+            bindings[id] = nil
         }
-        let cfg = HotKeyConfig(keyCode: UInt32(e.keyCode),
-                               carbonModifiers: carbonModifiers(from: flags),
-                               display: hotKeyDisplay(flags: flags, keyCode: e.keyCode,
-                                                      characters: e.charactersIgnoringModifiers))
-        if onChange?(cfg) == true {
-            config = cfg
-            stop()
-            onStatus?("已设置为 \(cfg.display)")
-        } else {
-            onStatus?("「\(cfg.display)」被占用，换一个")
+        for snippet in snippets {
+            let id = snippet.id
+            guard bindings[id] == nil, let config = desired[id] else { continue }
+            if let token = center.register(keyCode: config.keyCode, modifiers: config.carbonModifiers,
+                                            callback: { onActivate(id) }) {
+                bindings[id] = (config, token)
+            }
         }
+        // Failed registrations are absent from bindings and retried on the next update.
+        activeIDs = Set(bindings.keys)
     }
 }
 
