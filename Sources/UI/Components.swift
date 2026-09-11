@@ -28,20 +28,24 @@ func kindColor(_ kind: ClipKind) -> NSColor {
     }
 }
 
-// Shared, opaque surfaces keep text legible regardless of the desktop behind a window.
+// Keep reading surfaces opaque; reserve native materials for window chrome.
 enum UIStyle {
     static let canvas = NSColor(name: nil) { appearance in
         appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-            ? NSColor(calibratedRed: 0.105, green: 0.115, blue: 0.135, alpha: 1)
-            : NSColor(calibratedRed: 0.97, green: 0.975, blue: 0.985, alpha: 1)
+            ? NSColor(white: 0.115, alpha: 1)
+            : NSColor(white: 0.96, alpha: 1)
     }
     static let surface = NSColor(name: nil) { appearance in
         appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-            ? NSColor(calibratedRed: 0.15, green: 0.16, blue: 0.18, alpha: 1)
+            ? NSColor(white: 0.155, alpha: 1)
             : .white
     }
-    static var border: NSColor {
-        .labelColor.withAlphaComponent(NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast ? 0.4 : 0.1)
+    static let border = NSColor(name: nil) { appearance in
+        var color = NSColor.clear
+        appearance.performAsCurrentDrawingAppearance {
+            color = .labelColor.withAlphaComponent(NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast ? 0.45 : 0.08)
+        }
+        return color
     }
 
     static func readableTint(_ color: NSColor) -> NSColor {
@@ -84,15 +88,23 @@ class SurfaceView: NSView {
     var fill: NSColor { didSet { needsDisplay = true } }
     var border: NSColor { didSet { needsDisplay = true } }
     let radius: CGFloat
+    private var accessibilityObserver: NSObjectProtocol?
 
-    init(fill: NSColor = UIStyle.surface, border: NSColor = .clear, radius: CGFloat = 10) {
+    init(fill: NSColor = UIStyle.surface, border: NSColor = .clear, radius: CGFloat = 12) {
         self.fill = fill
         self.border = border
         self.radius = radius
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
+        accessibilityObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in self?.needsDisplay = true }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    deinit {
+        if let accessibilityObserver { NSWorkspace.shared.notificationCenter.removeObserver(accessibilityObserver) }
+    }
 
     override func draw(_ dirtyRect: NSRect) {
         let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: radius, yRadius: radius)
@@ -107,6 +119,118 @@ class SurfaceView: NSView {
         super.viewDidChangeEffectiveAppearance()
         needsDisplay = true
     }
+}
+
+/// Native window material with an opaque fallback for accessibility preferences.
+final class ChromeView: NSVisualEffectView {
+    private var accessibilityObserver: NSObjectProtocol?
+    private let backing = SurfaceView(radius: 0)
+
+    init() {
+        super.init(frame: .zero)
+        material = .headerView
+        blendingMode = .behindWindow
+        state = .followsWindowActiveState
+        translatesAutoresizingMaskIntoConstraints = false
+        addSubview(backing)
+        NSLayoutConstraint.activate([
+            backing.topAnchor.constraint(equalTo: topAnchor),
+            backing.bottomAnchor.constraint(equalTo: bottomAnchor),
+            backing.leadingAnchor.constraint(equalTo: leadingAnchor),
+            backing.trailingAnchor.constraint(equalTo: trailingAnchor),
+        ])
+        updateAccessibility()
+        accessibilityObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in self?.updateAccessibility() }
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    deinit {
+        if let accessibilityObserver { NSWorkspace.shared.notificationCenter.removeObserver(accessibilityObserver) }
+    }
+
+    private var usesOpaqueBackground: Bool {
+        NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency ||
+            NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast
+    }
+
+    private func updateAccessibility() {
+        // Explicit fallback also covers systems that keep vibrant text enabled.
+        state = usesOpaqueBackground ? .inactive : .followsWindowActiveState
+        if usesOpaqueBackground {
+            backing.fill = UIStyle.canvas
+        } else {
+            // A light tint keeps the toolbar quiet while preserving the native backdrop.
+            backing.fill = NSColor(name: nil) { appearance in
+                appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+                    ? .clear : .white.withAlphaComponent(0.4)
+            }
+        }
+    }
+}
+
+/// A single field-level focus ring, including its padding, for borderless editors.
+final class InputSurfaceView: SurfaceView {
+    weak var focusTarget: NSView?
+    private var windowObserver: NSObjectProtocol?
+    private var isFocused = false
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if let windowObserver { NotificationCenter.default.removeObserver(windowObserver) }
+        windowObserver = nil
+        if let window {
+            windowObserver = NotificationCenter.default.addObserver(
+                forName: NSWindow.didUpdateNotification, object: window, queue: .main
+            ) { [weak self] _ in self?.updateFocus() }
+        }
+        updateFocus()
+    }
+
+    deinit {
+        if let windowObserver { NotificationCenter.default.removeObserver(windowObserver) }
+    }
+
+    private func updateFocus() {
+        let responder = window?.firstResponder
+        let editor = (focusTarget as? NSTextField)?.currentEditor()
+        let focused = window?.isKeyWindow == true && responder != nil &&
+            (responder === focusTarget || (editor != nil && responder === editor))
+        if focused != isFocused {
+            isFocused = focused
+            needsDisplay = true
+        }
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        if isFocused {
+            NSColor.keyboardFocusIndicatorColor.withAlphaComponent(
+                NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast ? 1 : 0.4
+            ).setStroke()
+            let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: radius, yRadius: radius)
+            path.lineWidth = 2
+            path.stroke()
+        }
+    }
+}
+
+final class SymbolTileView: SurfaceView {
+    init(_ name: String, color: NSColor, size: CGFloat = 28) {
+        super.init(fill: color.withAlphaComponent(0.1), radius: size * 0.26)
+        let icon = UIStyle.symbol(name, size: size * 0.52, color: UIStyle.readableTint(color))
+        addSubview(icon)
+        NSLayoutConstraint.activate([
+            widthAnchor.constraint(equalToConstant: size),
+            heightAnchor.constraint(equalToConstant: size),
+            icon.centerXAnchor.constraint(equalTo: centerXAnchor),
+            icon.centerYAnchor.constraint(equalTo: centerYAnchor),
+            icon.widthAnchor.constraint(equalToConstant: size * 0.65),
+            icon.heightAnchor.constraint(equalToConstant: size * 0.65),
+        ])
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 }
 
 final class FlippedDocumentView: NSView {

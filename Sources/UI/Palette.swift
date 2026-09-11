@@ -24,11 +24,17 @@ private final class PaletteRowView: NSTableRowView {
 
     override func drawSelection(in dirtyRect: NSRect) {
         let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 3), xRadius: 10, yRadius: 10)
-        NSColor.controlAccentColor.withAlphaComponent(0.12).setFill()
+        NSColor.controlAccentColor.withAlphaComponent(0.1).setFill()
         path.fill()
-        NSColor.controlAccentColor.withAlphaComponent(0.25).setStroke()
-        path.lineWidth = 1
-        path.stroke()
+        if NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast {
+            NSColor.controlAccentColor.setStroke()
+            path.lineWidth = 2
+            path.stroke()
+        }
+        let indicator = NSBezierPath(roundedRect: NSRect(x: 1, y: bounds.midY - 10, width: 3, height: 20),
+                                     xRadius: 1.5, yRadius: 1.5)
+        NSColor.controlAccentColor.setFill()
+        indicator.fill()
     }
 }
 
@@ -36,6 +42,7 @@ final class PaletteCellView: NSTableCellView {
     private struct Badge: Equatable {
         let text: String
         let color: NSColor?
+        let isKind: Bool
     }
 
     private let icon = NSImageView()
@@ -78,7 +85,7 @@ final class PaletteCellView: NSTableCellView {
         rowStack.orientation = .horizontal
         rowStack.distribution = .fill
         rowStack.alignment = .centerY
-        rowStack.spacing = 12
+        rowStack.spacing = 10
         rowStack.translatesAutoresizingMaskIntoConstraints = false
         rowStack.setVisibilityPriority(.mustHold, for: iconBackground)
         rowStack.setVisibilityPriority(.mustHold, for: textStack)
@@ -87,12 +94,12 @@ final class PaletteCellView: NSTableCellView {
 
         iconBackground.addSubview(icon)
         NSLayoutConstraint.activate([
-            iconBackground.widthAnchor.constraint(equalToConstant: 36),
-            iconBackground.heightAnchor.constraint(equalToConstant: 36),
+            iconBackground.widthAnchor.constraint(equalToConstant: 34),
+            iconBackground.heightAnchor.constraint(equalToConstant: 34),
             icon.centerXAnchor.constraint(equalTo: iconBackground.centerXAnchor),
             icon.centerYAnchor.constraint(equalTo: iconBackground.centerYAnchor),
-            icon.widthAnchor.constraint(equalToConstant: 22),
-            icon.heightAnchor.constraint(equalToConstant: 22),
+            icon.widthAnchor.constraint(equalToConstant: 20),
+            icon.heightAnchor.constraint(equalToConstant: 20),
         ])
 
         addSubview(rowStack)
@@ -114,8 +121,8 @@ final class PaletteCellView: NSTableCellView {
         subLabel.stringValue = row.subtitle
         subLabel.isHidden = row.subtitle.isEmpty
 
-        let nextBadges = [(row.badge, row.badgeColor), (row.accessoryBadge, row.accessoryBadgeColor)].compactMap { text, color in
-            text.map { Badge(text: $0, color: color) }
+        let nextBadges = [(row.badge, row.badgeColor, true), (row.accessoryBadge, row.accessoryBadgeColor, false)].compactMap { text, color, isKind in
+            text.map { Badge(text: $0, color: color, isKind: isKind) }
         }
         guard badges != nextBadges else { return }
         badges = nextBadges
@@ -123,18 +130,20 @@ final class PaletteCellView: NSTableCellView {
             rowStack.removeArrangedSubview(pill)
             pill.removeFromSuperview()
         }
-        pills = badges.map { makePill(text: $0.text, color: $0.color) }
+        pills = badges.map { badge in
+            makePill(text: badge.text, color: badge.color, isKind: badge.isKind)
+        }
         pills.forEach {
             rowStack.addArrangedSubview($0)
             rowStack.setVisibilityPriority(.mustHold, for: $0)
         }
     }
 
-    private func makePill(text: String, color: NSColor?) -> PillView {
+    private func makePill(text: String, color: NSColor?, isKind: Bool) -> PillView {
         return PillView(text: text, font: .systemFont(ofSize: 10, weight: .medium),
-                        textColor: color.map(UIStyle.readableTint) ?? .secondaryLabelColor,
-                        fill: color?.withAlphaComponent(0.09) ?? UIStyle.surface,
-                        stroke: color == nil ? UIStyle.border : .clear)
+                        textColor: isKind ? .secondaryLabelColor : color.map(UIStyle.readableTint) ?? .secondaryLabelColor,
+                        fill: isKind ? .labelColor.withAlphaComponent(0.04) : color?.withAlphaComponent(0.09) ?? UIStyle.surface,
+                        stroke: isKind || color != nil ? .clear : UIStyle.border)
     }
 }
 
@@ -159,7 +168,7 @@ final class PaletteController: NSObject, NSTableViewDataSource, NSTableViewDeleg
 
     private var window: NSWindow!
     private var searchField: NSTextField!
-    private var searchSurface: SurfaceView!
+    private var searchSurface: InputSurfaceView!
     private var countLabel: NSTextField!
     private var tableView: NSTableView!
     private var scroll: NSScrollView!
@@ -192,7 +201,10 @@ final class PaletteController: NSObject, NSTableViewDataSource, NSTableViewDeleg
         if front?.bundleIdentifier != Bundle.main.bundleIdentifier {
             previousApp = front
         }
-        searchField.placeholderString = placeholder
+        searchField.placeholderAttributedString = NSAttributedString(string: placeholder, attributes: [
+            .foregroundColor: NSColor.secondaryLabelColor,
+            .font: NSFont.systemFont(ofSize: 15),
+        ])
         searchField.stringValue = ""
         query = ""
         reload()
@@ -255,7 +267,7 @@ final class PaletteController: NSObject, NSTableViewDataSource, NSTableViewDeleg
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.title = title
-        window.backgroundColor = UIStyle.canvas
+        window.backgroundColor = UIStyle.surface
         window.isMovableByWindowBackground = true
         window.isReleasedWhenClosed = false
         window.level = .floating
@@ -265,17 +277,17 @@ final class PaletteController: NSObject, NSTableViewDataSource, NSTableViewDeleg
         window.standardWindowButton(.miniaturizeButton)?.isHidden = true
         window.standardWindowButton(.zoomButton)?.isHidden = true
 
-        let content = SurfaceView(fill: UIStyle.canvas, radius: 0)
+        let content = SurfaceView(fill: UIStyle.surface, radius: 0)
         window.contentView = content
 
-        let headingIcon = UIStyle.symbol(symbolName, size: 15, color: .controlAccentColor)
-        let heading = UIStyle.label(title, size: 13, weight: .semibold)
+        let headingIcon = SymbolTileView(symbolName, color: .controlAccentColor, size: 28)
+        let heading = UIStyle.label(title, size: 15, weight: .semibold)
         countLabel = UIStyle.label("", size: 11, color: .secondaryLabelColor)
+        countLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
         let headingStack = NSStackView(views: [headingIcon, heading, countLabel])
         headingStack.alignment = .centerY
-        headingStack.spacing = 8
+        headingStack.spacing = 10
         headingStack.translatesAutoresizingMaskIntoConstraints = false
-        headingIcon.widthAnchor.constraint(equalToConstant: 18).isActive = true
 
         searchField = NSTextField()
         searchField.placeholderString = placeholder
@@ -293,10 +305,12 @@ final class PaletteController: NSObject, NSTableViewDataSource, NSTableViewDeleg
         searchField.setAccessibilityLabel(placeholder)
 
         let glyph = UIStyle.symbol("magnifyingglass", size: 15)
-        searchSurface = SurfaceView(border: UIStyle.border)
+        searchSurface = InputSurfaceView(border: UIStyle.border, radius: 10)
+        searchSurface.focusTarget = searchField
         searchSurface.addSubview(glyph)
         searchSurface.addSubview(searchField)
-        let topDivider = UIStyle.separator()
+        let headerChrome = ChromeView()
+        let footerChrome = ChromeView()
 
         tableView = NSTableView()
         let col = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("main"))
@@ -321,18 +335,29 @@ final class PaletteController: NSObject, NSTableViewDataSource, NSTableViewDeleg
         scroll.documentView = tableView
         scroll.translatesAutoresizingMaskIntoConstraints = false
 
-        emptyIcon = UIStyle.symbol(symbolName, size: 28, color: .tertiaryLabelColor)
-        emptyIcon.heightAnchor.constraint(equalToConstant: 36).isActive = true
-        emptyLabel = UIStyle.label(emptyText, size: 14, weight: .medium)
+        emptyIcon = UIStyle.symbol(symbolName, size: 26, color: UIStyle.readableTint(.controlAccentColor))
+        let emptyIconSurface = SurfaceView(fill: NSColor.controlAccentColor.withAlphaComponent(0.08), radius: 14)
+        emptyIconSurface.addSubview(emptyIcon)
+        NSLayoutConstraint.activate([
+            emptyIconSurface.widthAnchor.constraint(equalToConstant: 48),
+            emptyIconSurface.heightAnchor.constraint(equalToConstant: 48),
+            emptyIcon.centerXAnchor.constraint(equalTo: emptyIconSurface.centerXAnchor),
+            emptyIcon.centerYAnchor.constraint(equalTo: emptyIconSurface.centerYAnchor),
+            emptyIcon.widthAnchor.constraint(equalToConstant: 32),
+            emptyIcon.heightAnchor.constraint(equalToConstant: 32),
+        ])
+        emptyLabel = UIStyle.label(emptyText, size: 15, weight: .semibold)
         emptyLabel.alignment = .center
         emptyDetailLabel = UIStyle.label(emptyDetail, size: 12, color: .secondaryLabelColor)
         emptyDetailLabel.alignment = .center
-        emptyState = NSStackView(views: [emptyIcon, emptyLabel, emptyDetailLabel])
+        emptyDetailLabel.maximumNumberOfLines = 2
+        emptyDetailLabel.lineBreakMode = .byWordWrapping
+        emptyState = NSStackView(views: [emptyIconSurface, emptyLabel, emptyDetailLabel])
         emptyState.orientation = .vertical
         emptyState.alignment = .centerX
         emptyState.spacing = 8
-        emptyState.setCustomSpacing(14, after: emptyIcon)
-        emptyState.setCustomSpacing(18, after: emptyDetailLabel)
+        emptyState.setCustomSpacing(12, after: emptyIconSurface)
+        emptyState.setCustomSpacing(14, after: emptyDetailLabel)
         emptyState.isHidden = true
         emptyState.translatesAutoresizingMaskIntoConstraints = false
         if onCreate != nil { emptyState.addArrangedSubview(makeCreateButton()) }
@@ -342,22 +367,23 @@ final class PaletteController: NSObject, NSTableViewDataSource, NSTableViewDeleg
         let footer = buildFooter()
         footer.translatesAutoresizingMaskIntoConstraints = false
 
-        content.addSubview(headingStack)
-        content.addSubview(searchSurface)
-        content.addSubview(topDivider)
+        content.addSubview(headerChrome)
+        content.addSubview(footerChrome)
+        headerChrome.addSubview(headingStack)
+        headerChrome.addSubview(searchSurface)
         content.addSubview(scroll)
         content.addSubview(emptyState)
         content.addSubview(bottomDivider)
-        content.addSubview(footer)
+        footerChrome.addSubview(footer)
 
         NSLayoutConstraint.activate([
             headingStack.topAnchor.constraint(equalTo: content.topAnchor, constant: 18),
             headingStack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
-            headingStack.heightAnchor.constraint(equalToConstant: 24),
+            headingStack.heightAnchor.constraint(equalToConstant: 28),
             searchSurface.topAnchor.constraint(equalTo: headingStack.bottomAnchor, constant: 12),
             searchSurface.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
             searchSurface.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
-            searchSurface.heightAnchor.constraint(equalToConstant: 40),
+            searchSurface.heightAnchor.constraint(equalToConstant: 42),
             glyph.leadingAnchor.constraint(equalTo: searchSurface.leadingAnchor, constant: 12),
             glyph.centerYAnchor.constraint(equalTo: searchSurface.centerYAnchor),
             glyph.widthAnchor.constraint(equalToConstant: 18),
@@ -365,11 +391,12 @@ final class PaletteController: NSObject, NSTableViewDataSource, NSTableViewDeleg
             searchField.leadingAnchor.constraint(equalTo: glyph.trailingAnchor, constant: 8),
             searchField.trailingAnchor.constraint(equalTo: searchSurface.trailingAnchor, constant: -12),
 
-            topDivider.topAnchor.constraint(equalTo: searchSurface.bottomAnchor, constant: 16),
-            topDivider.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-            topDivider.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            headerChrome.topAnchor.constraint(equalTo: content.topAnchor),
+            headerChrome.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            headerChrome.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            headerChrome.bottomAnchor.constraint(equalTo: searchSurface.bottomAnchor, constant: 14),
 
-            scroll.topAnchor.constraint(equalTo: topDivider.bottomAnchor, constant: 8),
+            scroll.topAnchor.constraint(equalTo: headerChrome.bottomAnchor, constant: 8),
             scroll.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12),
             scroll.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12),
             scroll.bottomAnchor.constraint(equalTo: bottomDivider.topAnchor, constant: -8),
@@ -383,6 +410,10 @@ final class PaletteController: NSObject, NSTableViewDataSource, NSTableViewDeleg
             bottomDivider.trailingAnchor.constraint(equalTo: content.trailingAnchor),
             bottomDivider.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -46),
 
+            footerChrome.topAnchor.constraint(equalTo: bottomDivider.bottomAnchor),
+            footerChrome.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+            footerChrome.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            footerChrome.trailingAnchor.constraint(equalTo: content.trailingAnchor),
             footer.centerXAnchor.constraint(equalTo: content.centerXAnchor),
             footer.centerYAnchor.constraint(equalTo: bottomDivider.bottomAnchor, constant: 23),
             footer.leadingAnchor.constraint(greaterThanOrEqualTo: content.leadingAnchor, constant: 12),
@@ -390,7 +421,7 @@ final class PaletteController: NSObject, NSTableViewDataSource, NSTableViewDeleg
         ])
         if onCreate != nil {
             let createButton = makeCreateButton()
-            content.addSubview(createButton)
+            headerChrome.addSubview(createButton)
             NSLayoutConstraint.activate([
                 createButton.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
                 createButton.centerYAnchor.constraint(equalTo: headingStack.centerYAnchor),
@@ -458,14 +489,6 @@ final class PaletteController: NSObject, NSTableViewDataSource, NSTableViewDeleg
             }
             group.alphaValue = enabled ? 1 : 0.4
         }
-    }
-
-    func controlTextDidBeginEditing(_ obj: Notification) {
-        searchSurface.border = .controlAccentColor.withAlphaComponent(0.45)
-    }
-
-    func controlTextDidEndEditing(_ obj: Notification) {
-        searchSurface.border = UIStyle.border
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) { updateFooterState() }

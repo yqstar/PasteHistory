@@ -208,7 +208,7 @@ private func testClipboardAndThumbnails(in directory: URL, defaults: UserDefault
     controller.show()
     pump()
     let window = NSApp.windows.first { window in
-        descendants(window.contentView!).contains { ($0 as? NSTextField)?.placeholderString == "搜索粘贴历史…" }
+        descendants(window.contentView!).contains { ($0 as? NSTextField)?.accessibilityLabel() == "搜索粘贴历史…" }
     }!
     try snapshot(window, "history-thumbnails")
     let search = descendants(window.contentView!).compactMap { $0 as? NSTextField }.first { $0.isEditable }!
@@ -238,7 +238,7 @@ private func runTests() throws {
     pump()
     let pickerWindow = NSApp.windows.first { window in
         descendants(window.contentView!).contains {
-            ($0 as? NSTextField)?.placeholderString == "搜索代码片段…"
+            ($0 as? NSTextField)?.accessibilityLabel() == "搜索代码片段…"
         }
     }!
     let createButtons = buttons(pickerWindow, title: "新建片段")
@@ -369,7 +369,7 @@ private func runTests() throws {
     picker.show()
     pump()
     let search = descendants(pickerWindow.contentView!).compactMap { $0 as? NSTextField }
-        .first { $0.placeholderString == "搜索代码片段…" }!
+        .first { $0.accessibilityLabel() == "搜索代码片段…" }!
     pickerWindow.makeFirstResponder(search)
     (pickerWindow.firstResponder as? NSTextView)?.insertText("UNMATCHED_QUERY", replacementRange: NSRange(location: NSNotFound, length: 0))
     pump()

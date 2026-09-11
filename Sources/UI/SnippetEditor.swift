@@ -70,17 +70,20 @@ final class SnippetEditorWindowController: NSObject, NSWindowDelegate, NSTextVie
 
         titleField = NSTextField()
         titleField.placeholderString = "为这段内容起个名字"
-        titleField.font = .systemFont(ofSize: 14)
+        titleField.font = .systemFont(ofSize: 15, weight: .medium)
         titleField.isBordered = false
         titleField.isBezeled = false
         titleField.drawsBackground = false
-        titleField.focusRingType = .exterior
+        titleField.focusRingType = .none
+        titleField.cell?.usesSingleLineMode = true
+        titleField.cell?.isScrollable = true
         titleField.translatesAutoresizingMaskIntoConstraints = false
         titleField.setAccessibilityLabel("片段标题")
-        let titleSurface = SurfaceView(border: UIStyle.border, radius: 8)
+        let titleSurface = InputSurfaceView(border: UIStyle.border, radius: 10)
+        titleSurface.focusTarget = titleField
         titleSurface.addSubview(titleField)
         NSLayoutConstraint.activate([
-            titleSurface.heightAnchor.constraint(equalToConstant: 40),
+            titleSurface.heightAnchor.constraint(equalToConstant: 44),
             titleField.leadingAnchor.constraint(equalTo: titleSurface.leadingAnchor, constant: 12),
             titleField.trailingAnchor.constraint(equalTo: titleSurface.trailingAnchor, constant: -12),
             titleField.centerYAnchor.constraint(equalTo: titleSurface.centerYAnchor),
@@ -92,14 +95,14 @@ final class SnippetEditorWindowController: NSObject, NSWindowDelegate, NSTextVie
         contentView.isAutomaticDashSubstitutionEnabled = false
         contentView.isAutomaticTextReplacementEnabled = false
         contentView.isAutomaticSpellingCorrectionEnabled = false
-        contentView.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        contentView.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
         contentView.textColor = .labelColor
         contentView.backgroundColor = UIStyle.surface
         contentView.delegate = self
         contentView.setAccessibilityLabel("片段正文")
         contentView.allowsUndo = true
         contentView.autoresizingMask = [.width]
-        contentView.textContainerInset = NSSize(width: 12, height: 12)
+        contentView.textContainerInset = NSSize(width: 14, height: 14)
         contentView.isHorizontallyResizable = false
         contentView.isVerticallyResizable = true
         contentView.textContainer?.widthTracksTextView = true
@@ -114,7 +117,8 @@ final class SnippetEditorWindowController: NSObject, NSWindowDelegate, NSTextVie
         scroll.autohidesScrollers = true
         scroll.documentView = contentView
         scroll.translatesAutoresizingMaskIntoConstraints = false
-        let contentSurface = SurfaceView(border: UIStyle.border, radius: 8)
+        let contentSurface = InputSurfaceView(border: UIStyle.border)
+        contentSurface.focusTarget = contentView
         contentSurface.addSubview(scroll)
         NSLayoutConstraint.activate([
             scroll.topAnchor.constraint(equalTo: contentSurface.topAnchor, constant: 4),
@@ -134,17 +138,16 @@ final class SnippetEditorWindowController: NSObject, NSWindowDelegate, NSTextVie
         let titleSection = labeledSection("标题", detail: "可选 · 留空时自动命名", control: titleSurface)
         let contentSection = labeledSection("内容", detail: "纯文本", control: contentSurface)
         contentStats = UIStyle.label("", size: 11, color: .secondaryLabelColor)
+        contentStats.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
         let spacer = NSView()
         spacer.setContentHuggingPriority(.init(1), for: .horizontal)
         let footer = NSStackView(views: [contentStats, spacer, buttons])
         footer.alignment = .centerY
         footer.spacing = 12
-        let divider = UIStyle.separator()
-
-        let stack = NSStackView(views: [titleSection, contentSection, divider, footer])
+        let stack = NSStackView(views: [titleSection, contentSection, footer])
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 16
+        stack.spacing = 20
         stack.translatesAutoresizingMaskIntoConstraints = false
         v.addSubview(stack)
 
@@ -157,7 +160,6 @@ final class SnippetEditorWindowController: NSObject, NSWindowDelegate, NSTextVie
             titleSection.widthAnchor.constraint(equalTo: stack.widthAnchor),
             contentSection.widthAnchor.constraint(equalTo: stack.widthAnchor),
             contentSurface.heightAnchor.constraint(greaterThanOrEqualToConstant: 180),
-            divider.widthAnchor.constraint(equalTo: stack.widthAnchor),
             footer.widthAnchor.constraint(equalTo: stack.widthAnchor),
         ])
 

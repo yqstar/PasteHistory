@@ -1,249 +1,93 @@
 # PasteHistory · 粘贴历史
 
-一个轻量、原生的 macOS 菜单栏剪贴板历史工具。使用 AppKit / Swift 编写，无第三方依赖；文本、图片、文件路径和代码片段均只保存在本地。
+轻量、原生的 macOS 菜单栏剪贴板工具。记录文本、图片和文件路径，将常用代码、链接和文字存为片段，随时搜索并粘贴。所有内容仅保存在本机。
 
 [![Latest Release](https://img.shields.io/github/v/release/yqstar/PasteHistory?display_name=tag&sort=semver)](https://github.com/yqstar/PasteHistory/releases/latest)
 ![macOS 13+](https://img.shields.io/badge/macOS-13%2B-black)
 ![Universal](https://img.shields.io/badge/arch-Apple%20Silicon%20%7C%20Intel-blue)
 
-[下载最新版本](https://github.com/yqstar/PasteHistory/releases/latest) · [从源码构建](#从源码构建) · [版本记录](CHANGELOG.md) · [查看全部 Releases](https://github.com/yqstar/PasteHistory/releases)
-
-## 界面预览
-
-当前源码界面，使用示例数据展示。截图会随页面主题切换浅色或深色版本。
+[下载最新版](https://github.com/yqstar/PasteHistory/releases/latest) · [版本记录](CHANGELOG.md) · [开发说明](docs/DEVELOPMENT.md)
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/history-dark.png">
-    <img src="docs/screenshots/history-light.png" width="640" alt="历史选择器：搜索文本、图片和文件，使用键盘选择并粘贴">
+    <img src="docs/screenshots/history-light.png" width="600" alt="历史选择器：搜索复制过的内容，使用方向键选择并按 Return 粘贴">
   </picture>
 </p>
 
-<p align="center">按 ⌃⌘P 唤出历史，搜索后按 Return 粘贴；文本历史可用 ⌘S 保存为片段。</p>
+<p align="center">⌃⌘P 打开历史 → 输入关键词 → Return 粘贴</p>
 
-## 下载与安装
+## 开始使用
 
-### 从 Release 下载（推荐）
+1. 从 [最新 Release](https://github.com/yqstar/PasteHistory/releases/latest) 下载 Universal DMG，打开后将“粘贴历史”拖入 `Applications`。
+2. 启动应用，菜单栏会出现剪贴板图标。应用不会显示在 Dock 中。
+3. 在“系统设置 → 隐私与安全性 → 辅助功能”中允许“粘贴历史”，即可自动粘贴；未授权时，选中内容后可手动按 `⌘V`。
 
-1. 打开 [最新 Release](https://github.com/yqstar/PasteHistory/releases/latest)。
-2. 下载 `PasteHistory-x.y.z-universal.dmg`。
-3. 打开 DMG，将“粘贴历史”拖入 `Applications`。
-4. 启动后，菜单栏右上角会出现剪贴板图标；应用不会显示在 Dock 中。
+支持 macOS 13 及以上、Apple Silicon 和 Intel。当前安装包使用 ad-hoc 签名，尚未经过 Apple 公证；首次启动如被拦截，请在系统设置的“隐私与安全性”中查看并允许打开。
 
-Release 中的 Universal 版本同时支持 Apple Silicon 和 Intel Mac，最低系统版本为 macOS 13。
+## 常用快捷键
 
-> 当前发布包使用 ad-hoc 签名，尚未经过 Apple 公证。首次启动若出现“无法验证开发者”，可在 Finder 中右键应用并选择“打开”，再确认启动。
+| 操作 | 快捷键 |
+| --- | --- |
+| 打开历史 / 片段选择器 | `⌃⌘P` / `⌃⌘S` |
+| 选择内容 / 粘贴 | `↑` `↓` / `Return` |
+| 关闭选择器 | `Esc` |
+| 删除选中项 | `⌘⌫` |
+| 将选中的文本历史保存为片段 | `⌘S` |
+| 新建 / 编辑片段 | `⌘N` / `⌘E` |
 
-### 从源码构建
+片段支持按标题和正文搜索。新建时标题可留空，关闭未保存的编辑会提示保存或放弃。
 
-需要先安装 Xcode Command Line Tools：
-
-```bash
-xcode-select --install
-```
-
-克隆并构建：
-
-```bash
-git clone https://github.com/yqstar/PasteHistory.git
-cd PasteHistory
-./build.sh
-open build/PasteHistory.app
-```
-
-构建产物为 `build/PasteHistory.app`，包含应用图标，并同时支持 `arm64` 和 `x86_64`。
-
-运行 `bash test.sh` 检查数据保存、备份恢复和搜索逻辑。`bash test-ui.sh` 会在图形会话中使用临时数据和独立剪贴板验证片段创建、草稿保护、图片恢复与快捷键录制，并将界面截图保存到 `build/snippet-ui-screenshots/`。
-
-运行 `bash screenshots.sh` 可使用真实 AppKit 界面和临时示例数据重新生成文档截图，输出到 `build/readme-screenshots/`。其中 `qa/` 包含小窗口与空状态截图；检查布局后，将主目录中的 PNG 复制到 `docs/screenshots/`。该脚本不会读写日常历史、监听系统剪贴板或注册全局快捷键。
-
-如需自行生成 DMG：
-
-```bash
-./make-dmg.sh
-```
-
-产物位于 `build/PasteHistory.dmg`。
-
-## 项目结构
-
-```text
-Sources/
-├── App/       # 应用入口、菜单栏和模块组装
-├── Core/      # 数据模型、搜索、持久化和更新检查
-├── macOS/     # 剪贴板、自动粘贴、全局快捷键和开机启动
-└── UI/        # 公共组件、选择器、片段编辑器、设置与更新窗口
-Tests/
-├── Logic/     # 数据、搜索、快捷键注册和更新检查测试
-└── SnippetUI/ # 使用临时数据的 AppKit 界面测试
-Tools/
-├── swift-common.sh # 构建、测试和截图共用的编译配置
-├── Screenshots/    # 文档截图工具
-└── release-notes.py
-Resources/          # 应用图标
-docs/screenshots/   # README 使用的截图
-build/              # 本机构建产物与测试截图，不提交到 Git
-```
-
-根目录保留 `build.sh`、`test.sh`、`test-ui.sh`、`screenshots.sh` 和 `make-dmg.sh` 作为命令入口。应用构建、界面测试和截图工具会递归收集 `Sources` 中的 Swift 文件，并分别使用自己的 `main.swift`；逻辑测试只编译核心文件与快捷键模块。
-
-界面颜色和图标定义集中在 `UI/Components.swift`，系统快捷键注册和配置保存在 `macOS/HotKey.swift`。目前仍是单个 macOS 编译模块，片段数据保留原有 Carbon 快捷键格式。
-
-## 功能
-
-- **自动记录剪贴板**：支持文本、图片和文件路径，重复文本或文件只移动到最前，不重复新增。
-- **历史选择器**：默认按 `⌃⌘P` 唤出；支持全文和文件路径搜索，拼音转换结果按容量缓存，减少连续搜索时的重复计算。
-- **代码片段选择器**：默认按 `⌃⌘S` 唤出，可按标题或内容搜索常用代码、链接和文本。
-- **键盘优先**：使用 `↑` / `↓` 选择，`Return` 粘贴，`⌘⌫` 删除，`Esc` 关闭；历史选择器支持 `⌘S` 将选中文本保存为片段，片段选择器支持 `⌘N` 新建、`⌘E` 编辑。
-- **自动粘贴**：选中内容后写回系统剪贴板，并自动向之前使用的 App 发送 `⌘V`。
-- **菜单栏快捷访问**：显示最近 5 条历史和最近 3 条片段，历史项支持 `⌘1`–`⌘5` 快捷选择，其余内容使用懒加载子菜单。
-- **片段管理**：可直接新建片段、从历史保存，或通过 JSON 导入、导出；空正文和重复正文不会重复保存，导入时可按 UUID 合并或替换全部。
-- **可配置设置**：自定义两个选择器的全局快捷键、历史保留条数和开机自启动。
-- **统一的原生界面**：适配浅色与深色模式，清晰区分选中项、内容类型和不可用操作；选择器、编辑器与设置窗口均可调整大小。
-- **版本与更新**：可离线查看版本记录，手动检查 GitHub 上的最新正式版本，并打开新版安装包下载。
-- **本地持久化**：所有剪贴板与片段数据保存在 `~/Library/Application Support/PasteHistory/`，不会上传；仅手动检查更新时请求 GitHub，打开发布页面或下载安装包时由浏览器联网。
-
-## 使用方法
-
-### 历史选择器
-
-1. 在任意 App 中复制文本、图片或文件。
-2. 按 `⌃⌘P` 打开历史选择器。
-3. 输入关键字过滤，使用方向键选择。
-4. 按 `Return` 写回剪贴板并自动粘贴。
-
-选中文本历史后按 `⌘S`，可以用该记录的完整原文新建片段。
-
-### 片段选择器
-
-在菜单栏中可以直接使用最近片段，也可以按 `⌃⌘S` 打开完整片段选择器。片段粘贴不会被再次记录进剪贴板历史。
+<details>
+<summary>查看片段选择器与编辑器</summary>
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/snippets-dark.png">
-    <img src="docs/screenshots/snippets-light.png" width="640" alt="片段选择器：代码、链接和文本类型标签，右上角新建片段，底部按用途分组的快捷键">
+    <img src="docs/screenshots/snippets-light.png" width="600" alt="片段选择器：搜索常用代码、链接和文本，支持新建与编辑">
   </picture>
 </p>
-
-点击右上角“新建片段”或按 `⌘N`，填写标题和正文后即可保存；没有片段或搜索无结果时，也可点击列表中央的创建按钮。选中已有片段后按 `⌘E` 编辑。
-
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/editor-dark.png">
-    <img src="docs/screenshots/editor-light.png" width="640" alt="片段编辑器：可选标题、等宽字体正文，以及实时行数和字符数">
+    <img src="docs/screenshots/editor-light.png" width="600" alt="片段编辑器：可选标题、等宽正文与实时字数">
   </picture>
 </p>
 
-标题留空时会从正文自动生成；编辑器使用等宽字体，并在底部显示正文的行数和字符数。
+</details>
 
-关闭编辑窗口、切换编辑内容或退出应用时，如果有未保存的内容，会提示“保存 / 放弃 / 取消”。保存失败或正文重复时会保留当前草稿；原片段被删除或替换后，也可将保留的草稿另存为新片段。
+## 设置
 
-导入和导出片段的位置：
+从菜单栏打开“设置…”（`⌘,`）：
 
-```text
-菜单栏 → 设置… → 数据管理 → 片段管理
-```
-
-### 修改快捷键
-
-两个选择器的快捷键都可以在以下位置修改：
-
-```text
-菜单栏 → 设置…（⌘,）→ 快捷键
-```
-
-- 点击快捷键按钮后，按下新的组合键即可立即保存。
-- 组合键至少需要包含 `⌘`、`⌥` 或 `⌃` 之一；录制时按 `Esc` 取消。
-- 如果组合已被其他程序占用，应用会保留原快捷键并提示更换。
-- “恢复默认”可分别恢复为 `⌃⌘P` 和 `⌃⌘S`。
+- **快捷访问**：修改两个全局快捷键，设置登录时启动。
+- **数据管理**：调整历史保留条数（默认 100，可设 10–500）、清空历史、导入或导出片段。
+- **版本与更新**：查看本地版本记录，手动检查并下载新版。
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/settings-dark.png">
-    <img src="docs/screenshots/settings-light.png" width="580" alt="设置窗口：历史保留条数、开机自启动、全局快捷键、历史管理与片段导入导出">
+    <img src="docs/screenshots/settings-light.png" width="540" alt="设置：快捷访问、数据管理和版本更新；历史保留条数与历史清理集中在数据管理中">
   </picture>
 </p>
 
-## 版本记录与检查更新
+截图使用当前源码和示例数据，随页面主题切换浅色或深色版本。
 
-打开“菜单栏 → 设置… → 版本与更新”，选择“版本记录…”可查看当前版本、构建号和随安装包附带的中文更新记录，无需联网。选择“检查更新…”会查询 GitHub 最新正式 Release。
+## 数据与隐私
 
-- 发现新版时展示发布说明，点击“下载新版…”在浏览器中下载 Universal DMG；如果安装包暂未上传，可点击“发布页面”。
-- 下载后退出 PasteHistory，将新版拖入“应用程序”替换，再重新启动，原有历史和片段保留。
-- 网络不可用或检查频率受限时会显示原因，可以重新检查或通过“全部发布”打开 GitHub。
-- 检查不会后台定时运行，也不会自动安装；请求不包含剪贴板、片段或设备标识。
+历史、片段及图片位于 `~/Library/Application Support/PasteHistory/`，以明文保存在本机，不会上传。清空历史不会删除已保存片段；复制过的敏感内容请及时清理。
 
-完整源码版本记录见 [CHANGELOG.md](CHANGELOG.md)。
+应用仅在手动检查更新时请求 GitHub，不发送剪贴板或片段内容，不自动安装更新。下载新版后退出应用、替换安装即可，原有数据保留。
 
-## 权限说明
+## 从源码构建
 
-监听系统剪贴板本身不需要额外权限。自动粘贴通过模拟 `⌘V` 完成，需要在以下位置允许“粘贴历史”使用辅助功能：
-
-```text
-系统设置 → 隐私与安全性 → 辅助功能
-```
-
-未授权时，选中的内容仍会写入系统剪贴板，可以手动按 `⌘V` 粘贴。
-
-## 数据位置
-
-```text
-~/Library/Application Support/PasteHistory/
-├── history.json      # 文本、文件路径和图片元数据
-├── snippets.json     # 已保存的代码片段
-├── history.json.bak  # 上一版历史数据（首次更新后生成）
-├── snippets.json.bak # 上一版片段数据（首次更新后生成）
-└── images/           # 剪贴板图片（PNG）
-```
-
-- 历史记录默认保留 100 条，可在设置中调整为 10–500 条。
-- JSON 主文件损坏或缺失时会自动尝试恢复上一版备份；损坏文件会改名保留，应用会显示提示。
-- 清空历史请使用“设置… → 数据管理 → 清空历史…”，该操作不会删除已保存片段。
-- 数据以明文保存在本机；如果复制过密码或其他敏感信息，请及时清理历史。
-
-## 代码片段格式
-
-`snippets.json` 是一个 JSON 数组：
-
-```json
-[
-  {
-    "id": "11111111-2222-3333-4444-555555555555",
-    "title": "邮箱签名",
-    "content": "Best,\n张三",
-    "hotKey": {
-      "keyCode": 18,
-      "carbonModifiers": 2304,
-      "display": "⌥⌘1"
-    }
-  }
-]
-```
-
-- `id` 为 UUID。
-- `title` 和 `content` 分别是片段标题与实际粘贴内容。
-- `hotKey` 可省略；设置后可以用独立全局快捷键直接粘贴该片段。
-- 直接编辑 JSON 后需要重启应用；日常使用建议通过设置中的导入、导出功能管理。
-
-## 自动发布
-
-项目使用 [GitHub Actions](.github/workflows/release.yml) 自动构建 Release。推送符合 `vMAJOR.MINOR.PATCH` 格式的标签后，工作流会：
-
-1. 运行数据与搜索逻辑测试。
-2. 构建 Apple Silicon 与 Intel 双架构应用。
-3. 校验应用签名与 DMG。
-4. 生成带版本号的 Universal DMG 和 SHA-256 文件。
-5. 从 `CHANGELOG.md` 提取对应版本的中文说明，并附加 GitHub 自动生成的变更链接后创建 Release。
-
-发布前，将 `Info.plist` 中的版本号更新为目标版本，并在 `CHANGELOG.md` 最上方添加该版本的记录与发布日期。工作流会校验标签和应用版本一致、对应说明非空。发布示例：
+需要 Xcode Command Line Tools（`xcode-select --install`），无第三方依赖。
 
 ```bash
-git tag -a v1.0.5 -m "PasteHistory v1.0.5"
-git push origin v1.0.5
+git clone https://github.com/yqstar/PasteHistory.git
+cd PasteHistory
+bash build.sh
+open build/PasteHistory.app
 ```
 
-## 说明
-
-- 应用仅监听通用剪贴板 `NSPasteboard.general`，根据活跃程度以 0.3–2 秒间隔动态轮询。
-- 全局快捷键使用 Carbon `RegisterEventHotKey` 注册。
-- 当前版本没有 Apple Developer ID 签名和公证；如需正式公开分发，建议在 Release 工作流中补充签名、公证和 stapling。
+测试、截图生成、DMG 打包、数据格式和发布流程见 [开发说明](docs/DEVELOPMENT.md)。

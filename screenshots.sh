@@ -8,7 +8,9 @@ OUTPUT="$DIR/build/PasteHistoryScreenshots"
 SCREENSHOTS="$DIR/build/readme-screenshots"
 mkdir -p "$SCREENSHOTS"
 
-ph_compile_tool "$DIR/Tools/Screenshots/main.swift" "$OUTPUT" "${PH_LIBRARY_SOURCES[@]}"
+# Supply bundle metadata so the real settings header displays the app's version.
+ph_compile_tool "$DIR/Tools/Screenshots/main.swift" "$OUTPUT" "${PH_LIBRARY_SOURCES[@]}" \
+    -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker "$DIR/Info.plist"
 
 "$OUTPUT" "$SCREENSHOTS" "$DIR/Resources/AppIcon.png"
 echo "Screenshots are ready for review in $SCREENSHOTS"

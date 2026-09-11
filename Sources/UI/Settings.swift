@@ -35,10 +35,11 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTextFieldDel
         NSApp.activate(ignoringOtherApps: true)
         centerWindowOnPointerScreen(window)
         window.makeKeyAndOrderFront(nil)
+        window.makeFirstResponder(nil)
     }
 
     private func build() {
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 580, height: 600),
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 580, height: 640),
                           styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = "设置"
         window.titlebarAppearsTransparent = true
@@ -81,17 +82,16 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTextFieldDel
             document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
         ])
 
-        let appIcon = UIStyle.symbol("doc.on.clipboard", size: 28, color: .controlAccentColor)
-        appIcon.widthAnchor.constraint(equalToConstant: 36).isActive = true
-        let appTitle = UIStyle.label("PasteHistory", size: 18, weight: .semibold)
-        let appDetail = UIStyle.label("版本 \(AppReleaseInfo.version) · 快捷访问与本地数据", size: 12, color: .secondaryLabelColor)
+        let appIcon = SymbolTileView("doc.on.clipboard", color: .controlAccentColor, size: 48)
+        let appTitle = UIStyle.label("PasteHistory", size: 20, weight: .semibold)
+        let appDetail = UIStyle.label("剪贴板历史与常用片段", size: 12, color: .secondaryLabelColor)
         let appText = NSStackView(views: [appTitle, appDetail])
         appText.orientation = .vertical
         appText.alignment = .leading
-        appText.spacing = 4
+        appText.spacing = 5
         let header = NSStackView(views: [appIcon, appText])
         header.alignment = .centerY
-        header.spacing = 12
+        header.spacing = 14
 
         recordButton = HotKeyRecorderButton()
         recordButton.config = HotKeyConfig.history
@@ -105,13 +105,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTextFieldDel
         snippetSummonButton.onStatus = { [weak self] msg in self?.setStatus(msg) }
         snippetSummonButton.widthAnchor.constraint(equalToConstant: 116).isActive = true
 
-        let hkGroup = makeGroup([
-            formRow("历史选择器", symbol: "clock.arrow.circlepath", trailing: [recordButton, smallButton("恢复默认", #selector(resetHistoryDefault))]),
-            hSeparator(),
-            formRow("片段选择器", symbol: "square.stack", trailing: [snippetSummonButton, smallButton("恢复默认", #selector(resetSnippetSummonDefault))]),
-        ])
-
-        let hkHint = footnote("点击快捷键开始录制，按 Esc 取消。组合键需包含 ⌘、⌥ 或 ⌃。")
+        let hkHint = footnote("点击快捷键录制，按 Esc 取消；需包含 ⌘、⌥ 或 ⌃。")
         statusLabel = footnote("")
         statusLabel.isHidden = true
         let hkHelp = NSStackView(views: [hkHint, statusLabel])
@@ -122,6 +116,15 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTextFieldDel
         autostartSwitch = NSSwitch()
         autostartSwitch.target = self
         autostartSwitch.action = #selector(toggleAutostart)
+        autostartSwitch.setAccessibilityLabel("登录时启动")
+
+        let accessGroup = makeGroup([
+            formRow("历史选择器", symbol: "clock.arrow.circlepath", trailing: [recordButton, smallButton("恢复默认", #selector(resetHistoryDefault))]),
+            hSeparator(),
+            formRow("片段选择器", symbol: "square.stack", color: .systemIndigo, trailing: [snippetSummonButton, smallButton("恢复默认", #selector(resetSnippetSummonDefault))]),
+            hSeparator(),
+            formRow("登录时启动", symbol: "power", color: .systemGreen, trailing: [autostartSwitch]),
+        ])
 
         maxItemsField = NSTextField()
         maxItemsField.integerValue = historyStore?.maxItems ?? HistoryStore.defaultMaxItems
@@ -140,12 +143,6 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTextFieldDel
         maxItemsStepper.target = self
         maxItemsStepper.action = #selector(stepperChanged)
 
-        let genGroup = makeGroup([
-            formRow("保留历史条数", detail: "保留最近 10–500 条记录", symbol: "clock", trailing: [maxItemsField, maxItemsStepper]),
-            hSeparator(),
-            formRow("开机自启动", detail: "登录后在菜单栏自动运行", symbol: "power", trailing: [autostartSwitch]),
-        ])
-
         let clearHistoryButton = smallButton("清空历史…", #selector(clearHistory))
         clearHistoryButton.contentTintColor = .systemRed
 
@@ -157,9 +154,11 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTextFieldDel
         snippetActions.spacing = 8
 
         let dataGroup = makeGroup([
-            formRow("历史管理", detail: "清空已记录的文本、图片和文件", symbol: "tray", trailing: [clearHistoryButton]),
+            formRow("保留历史条数", detail: "10–500 条，超出后移除最早记录", symbol: "clock", trailing: [maxItemsField, maxItemsStepper]),
             hSeparator(),
-            formRow("片段管理", detail: "通过 JSON 备份或迁移常用片段", symbol: "square.stack", trailing: [snippetActions]),
+            formRow("历史清理", detail: "移除所有历史，保留已保存片段", symbol: "tray", color: .secondaryLabelColor, trailing: [clearHistoryButton]),
+            hSeparator(),
+            formRow("片段备份", detail: "导入或导出常用代码、链接和文本", symbol: "square.stack", color: .systemIndigo, trailing: [snippetActions]),
         ])
         dataStatusLabel = footnote("")
         dataStatusLabel.isHidden = true
@@ -170,25 +169,21 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTextFieldDel
         ])
         versionActions.spacing = 8
         let versionGroup = makeGroup([
-            formRow("版本与更新", detail: "手动检查 GitHub 上的正式版本", symbol: "arrow.down.circle", trailing: [versionActions]),
+            formRow("版本与更新", detail: "当前版本 \(AppReleaseInfo.version)", symbol: "arrow.down.circle", color: .systemTeal, trailing: [versionActions]),
         ])
 
-        let hkTitle = sectionLabel("快捷键")
-        let genTitle = sectionLabel("通用")
+        let accessTitle = sectionLabel("快捷访问")
         let dataTitle = sectionLabel("数据管理")
 
-        let stack = NSStackView(views: [header, genTitle, genGroup,
-                                        hkTitle, hkGroup, hkHelp,
+        let stack = NSStackView(views: [header, accessTitle, accessGroup, hkHelp,
                                         dataTitle, dataGroup, dataStatusLabel, versionGroup])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 6
         stack.translatesAutoresizingMaskIntoConstraints = false
         stack.setCustomSpacing(24, after: header)
-        stack.setCustomSpacing(8, after: genTitle)
-        stack.setCustomSpacing(20, after: genGroup)
-        stack.setCustomSpacing(8, after: hkTitle)
-        stack.setCustomSpacing(10, after: hkGroup)
+        stack.setCustomSpacing(8, after: accessTitle)
+        stack.setCustomSpacing(10, after: accessGroup)
         stack.setCustomSpacing(20, after: hkHelp)
         stack.setCustomSpacing(8, after: dataTitle)
         stack.setCustomSpacing(16, after: dataGroup)
@@ -199,8 +194,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTextFieldDel
             stack.leadingAnchor.constraint(equalTo: document.leadingAnchor, constant: 24),
             stack.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -24),
             stack.bottomAnchor.constraint(equalTo: document.bottomAnchor, constant: -24),
-            hkGroup.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            genGroup.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            accessGroup.widthAnchor.constraint(equalTo: stack.widthAnchor),
             dataGroup.widthAnchor.constraint(equalTo: stack.widthAnchor),
             versionGroup.widthAnchor.constraint(equalTo: stack.widthAnchor),
             hkHelp.widthAnchor.constraint(equalTo: stack.widthAnchor),
@@ -211,15 +205,15 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTextFieldDel
         return v
     }
 
-    private func formRow(_ title: String, detail: String? = nil, symbol: String, trailing: [NSView]) -> NSView {
-        let l = UIStyle.label(title, size: 13)
+    private func formRow(_ title: String, detail: String? = nil, symbol: String,
+                         color: NSColor = .systemBlue, trailing: [NSView]) -> NSView {
+        let l = UIStyle.label(title, size: 13, weight: .medium)
         let text = NSStackView(views: [l])
         text.orientation = .vertical
         text.alignment = .leading
         text.spacing = 4
         if let detail { text.addArrangedSubview(UIStyle.label(detail, size: 11, color: .secondaryLabelColor)) }
-        let icon = UIStyle.symbol(symbol, size: 15)
-        icon.widthAnchor.constraint(equalToConstant: 20).isActive = true
+        let icon = SymbolTileView(symbol, color: color)
         let spacer = NSView()
         spacer.setContentHuggingPriority(.init(1), for: .horizontal)
         spacer.setContentCompressionResistancePriority(.init(1), for: .horizontal)
@@ -227,8 +221,9 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTextFieldDel
         row.orientation = .horizontal
         row.alignment = .centerY
         row.spacing = 8
+        row.setCustomSpacing(12, after: icon)
         row.edgeInsets = NSEdgeInsets(top: 12, left: 14, bottom: 12, right: 14)
-        row.heightAnchor.constraint(greaterThanOrEqualToConstant: detail == nil ? 48 : 60).isActive = true
+        row.heightAnchor.constraint(greaterThanOrEqualToConstant: detail == nil ? 52 : 62).isActive = true
         return row
     }
 
@@ -259,8 +254,8 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTextFieldDel
         NSLayoutConstraint.activate([
             container.heightAnchor.constraint(equalToConstant: 1),
             line.centerYAnchor.constraint(equalTo: container.centerYAnchor),
-            line.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 42),
-            line.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            line.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 54),
+            line.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -14),
         ])
         return container
     }
