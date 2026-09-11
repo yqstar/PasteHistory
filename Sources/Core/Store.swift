@@ -168,18 +168,18 @@ final class HistoryStore {
     }
 
     private static let maxItemsKey = "maxHistoryItems"
-    private static let defaultMaxItems = 100
-    private static let maximumMaxItems = 500
+    static let defaultMaxItems = 100
+    static let maxItemsRange = 10...500
     private let defaults: UserDefaults
 
     var maxItems: Int {
         get {
             let value = defaults.integer(forKey: Self.maxItemsKey)
             guard value > 0 else { return Self.defaultMaxItems }
-            return max(10, min(value, Self.maximumMaxItems))
+            return Self.clampedMaxItems(value)
         }
         set {
-            let clamped = max(10, min(newValue, Self.maximumMaxItems))
+            let clamped = Self.clampedMaxItems(newValue)
             guard clamped != defaults.integer(forKey: Self.maxItemsKey) else { return }
             defaults.set(clamped, forKey: Self.maxItemsKey)
             if trim() {
@@ -187,6 +187,10 @@ final class HistoryStore {
                 notifyChange()
             }
         }
+    }
+
+    static func clampedMaxItems(_ value: Int) -> Int {
+        min(max(value, maxItemsRange.lowerBound), maxItemsRange.upperBound)
     }
 
     let baseDir: URL

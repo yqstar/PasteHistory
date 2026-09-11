@@ -51,9 +51,8 @@ final class UpdateWindowController: NSObject {
 
         let content = SurfaceView(fill: UIStyle.canvas, radius: 0)
         window.contentView = content
-        let icon = UIStyle.symbol("doc.on.clipboard", size: 32, color: .controlAccentColor)
-        icon.widthAnchor.constraint(equalToConstant: 44).isActive = true
-        let title = UIStyle.label("PasteHistory", size: 21, weight: .semibold)
+        let icon = SymbolTileView("doc.on.clipboard", color: .controlAccentColor, size: 48)
+        let title = UIStyle.label("PasteHistory", size: 20, weight: .semibold)
         let version = UIStyle.label("版本 \(currentVersion) · 构建 \(buildNumber)", size: 12, color: .secondaryLabelColor)
         version.isSelectable = true
         let titleStack = NSStackView(views: [title, version])
@@ -61,7 +60,7 @@ final class UpdateWindowController: NSObject {
         titleStack.alignment = .leading
         titleStack.spacing = 5
         let header = NSStackView(views: [icon, titleStack])
-        header.spacing = 12
+        header.spacing = 14
         header.alignment = .centerY
 
         statusLabel = UIStyle.label("随时检查新版本", size: 14, weight: .semibold)
@@ -112,7 +111,8 @@ final class UpdateWindowController: NSObject {
         scroll.translatesAutoresizingMaskIntoConstraints = false
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
-        scroll.borderType = .bezelBorder
+        scroll.borderType = .noBorder
+        scroll.drawsBackground = false
         notesView = NSTextView()
         notesView.isEditable = false
         notesView.isSelectable = true
@@ -124,6 +124,14 @@ final class UpdateWindowController: NSObject {
         notesView.backgroundColor = UIStyle.surface
         notesView.setAccessibilityLabel("版本更新记录")
         scroll.documentView = notesView
+        let notesSurface = SurfaceView(border: UIStyle.border)
+        notesSurface.addSubview(scroll)
+        NSLayoutConstraint.activate([
+            scroll.topAnchor.constraint(equalTo: notesSurface.topAnchor, constant: 5),
+            scroll.bottomAnchor.constraint(equalTo: notesSurface.bottomAnchor, constant: -5),
+            scroll.leadingAnchor.constraint(equalTo: notesSurface.leadingAnchor, constant: 5),
+            scroll.trailingAnchor.constraint(equalTo: notesSurface.trailingAnchor, constant: -5),
+        ])
 
         let privacy = UIStyle.label("仅手动检查时连接 GitHub；不会上传剪贴板或片段内容。", size: 11, color: .secondaryLabelColor)
         privacy.maximumNumberOfLines = 0
@@ -139,7 +147,7 @@ final class UpdateWindowController: NSObject {
         let actions = NSStackView(views: [allReleases, spacer, releaseButton, downloadButton])
         actions.spacing = 8
 
-        let stack = NSStackView(views: [header, card, notesTabs, scroll, privacy, actions])
+        let stack = NSStackView(views: [header, card, notesTabs, notesSurface, privacy, actions])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 14
@@ -151,8 +159,8 @@ final class UpdateWindowController: NSObject {
             stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 24),
             stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -24),
             card.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            scroll.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 150),
+            notesSurface.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            notesSurface.heightAnchor.constraint(greaterThanOrEqualToConstant: 150),
             privacy.widthAnchor.constraint(equalTo: stack.widthAnchor),
             actions.widthAnchor.constraint(equalTo: stack.widthAnchor),
         ])

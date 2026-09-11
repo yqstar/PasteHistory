@@ -3,17 +3,14 @@
 set -euo pipefail
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$DIR/Tools/swift-common.sh"
 OUTPUT="$DIR/build/PasteHistoryScreenshots"
 SCREENSHOTS="$DIR/build/readme-screenshots"
-MODULE_CACHE="$DIR/build/.test-module-cache"
-mkdir -p "$MODULE_CACHE" "$SCREENSHOTS"
+mkdir -p "$SCREENSHOTS"
 
-swiftc -Onone -swift-version 5 \
-    -sdk "$(xcrun --sdk macosx --show-sdk-path)" \
-    -module-cache-path "$MODULE_CACHE" \
-    -o "$OUTPUT" \
-    "$DIR/Tools/Screenshots/main.swift" "$DIR"/Sources/*.swift \
-    -framework Cocoa
+# Supply bundle metadata so the real settings header displays the app's version.
+ph_compile_tool "$DIR/Tools/Screenshots/main.swift" "$OUTPUT" "${PH_LIBRARY_SOURCES[@]}" \
+    -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker "$DIR/Info.plist"
 
 "$OUTPUT" "$SCREENSHOTS" "$DIR/Resources/AppIcon.png"
 echo "Screenshots are ready for review in $SCREENSHOTS"

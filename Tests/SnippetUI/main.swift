@@ -25,6 +25,34 @@ private func descendants(_ view: NSView) -> [NSView] {
     [view] + view.subviews.flatMap(descendants)
 }
 
+private func testPaletteCellReuse() {
+    let cell = PaletteCellView(frame: .zero)
+    func labels() -> [String] {
+        descendants(cell).compactMap { $0 as? NSTextField }
+            .filter { !$0.isHiddenOrHasHiddenAncestor }.map(\.stringValue)
+    }
+    var row = PaletteRow(id: UUID(), icon: nil, title: "原片段", subtitle: "原摘要",
+                         badge: "代码", badgeColor: .systemIndigo,
+                         accessoryBadge: "快捷键冲突", accessoryBadgeColor: .systemRed)
+    cell.apply(row)
+    check(labels().contains("代码") && labels().contains("快捷键冲突"), "列表行应显示类型与快捷键状态标签")
+    row.title = "更新片段"
+    row.subtitle = "更新摘要"
+    cell.apply(row)
+    check(labels().contains("更新片段") && labels().contains("更新摘要") && !labels().contains("原片段"),
+          "复用相同标签时，标题和摘要仍应更新")
+    row.badge = "文本"
+    row.badgeColor = .systemBlue
+    row.accessoryBadge = nil
+    row.subtitle = ""
+    cell.apply(row)
+    check(labels().contains("文本") && !labels().contains("代码") && !labels().contains("快捷键冲突")
+          && !labels().contains("更新摘要"), "复用列表行时应移除过期标签并隐藏空摘要")
+    row.badge = nil
+    cell.apply(row)
+    check(descendants(cell).allSatisfy { !($0 is PillView) }, "无标签的行不应残留上一行的标签视图")
+}
+
 private func buttons(_ window: NSWindow, title: String) -> [NSButton] {
     descendants(window.contentView!).compactMap { $0 as? NSButton }
         .filter { $0.title == title && !$0.isHiddenOrHasHiddenAncestor }
@@ -180,7 +208,7 @@ private func testClipboardAndThumbnails(in directory: URL, defaults: UserDefault
     controller.show()
     pump()
     let window = NSApp.windows.first { window in
-        descendants(window.contentView!).contains { ($0 as? NSTextField)?.placeholderString == "搜索粘贴历史…" }
+        descendants(window.contentView!).contains { ($0 as? NSTextField)?.accessibilityLabel() == "搜索粘贴历史…" }
     }!
     try snapshot(window, "history-thumbnails")
     let search = descendants(window.contentView!).compactMap { $0 as? NSTextField }.first { $0.isEditable }!
@@ -193,6 +221,7 @@ private func testClipboardAndThumbnails(in directory: URL, defaults: UserDefault
 }
 
 private func runTests() throws {
+    testPaletteCellReuse()
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent("PasteHistoryUI-\(UUID())")
     defer { try? FileManager.default.removeItem(at: directory) }
     let suite = "PasteHistoryUITests.\(UUID())"
@@ -209,7 +238,7 @@ private func runTests() throws {
     pump()
     let pickerWindow = NSApp.windows.first { window in
         descendants(window.contentView!).contains {
-            ($0 as? NSTextField)?.placeholderString == "搜索代码片段…"
+            ($0 as? NSTextField)?.accessibilityLabel() == "搜索代码片段…"
         }
     }!
     let createButtons = buttons(pickerWindow, title: "新建片段")
@@ -340,7 +369,7 @@ private func runTests() throws {
     picker.show()
     pump()
     let search = descendants(pickerWindow.contentView!).compactMap { $0 as? NSTextField }
-        .first { $0.placeholderString == "搜索代码片段…" }!
+        .first { $0.accessibilityLabel() == "搜索代码片段…" }!
     pickerWindow.makeFirstResponder(search)
     (pickerWindow.firstResponder as? NSTextView)?.insertText("UNMATCHED_QUERY", replacementRange: NSRange(location: NSNotFound, length: 0))
     pump()
