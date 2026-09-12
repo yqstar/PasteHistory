@@ -9,9 +9,9 @@
     <key>CFBundleIdentifier</key>
     <string>com.local.pastehistory</string>
     <key>CFBundleVersion</key>
-    <string>1.0.6</string>
+    <string>1.0.7</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0.6</string>
+    <string>1.0.7</string>
     <key>CFBundleExecutable</key>
     <string>PasteHistory</string>
     <key>CFBundlePackageType</key>

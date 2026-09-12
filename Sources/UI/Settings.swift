@@ -119,11 +119,11 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTextFieldDel
         autostartSwitch.setAccessibilityLabel("登录时启动")
 
         let accessGroup = makeGroup([
+            formRow("登录时启动", symbol: "power", color: .systemGreen, trailing: [autostartSwitch]),
+            hSeparator(),
             formRow("历史选择器", symbol: "clock.arrow.circlepath", trailing: [recordButton, smallButton("恢复默认", #selector(resetHistoryDefault))]),
             hSeparator(),
             formRow("片段选择器", symbol: "square.stack", color: .systemIndigo, trailing: [snippetSummonButton, smallButton("恢复默认", #selector(resetSnippetSummonDefault))]),
-            hSeparator(),
-            formRow("登录时启动", symbol: "power", color: .systemGreen, trailing: [autostartSwitch]),
         ])
 
         maxItemsField = NSTextField()
@@ -132,7 +132,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTextFieldDel
         maxItemsField.alignment = .center
         maxItemsField.bezelStyle = .roundedBezel
         maxItemsField.delegate = self
-        maxItemsField.setAccessibilityLabel("保留历史条数")
+        maxItemsField.setAccessibilityLabel("历史条数")
         maxItemsField.widthAnchor.constraint(equalToConstant: 60).isActive = true
 
         maxItemsStepper = NSStepper()
@@ -154,7 +154,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTextFieldDel
         snippetActions.spacing = 8
 
         let dataGroup = makeGroup([
-            formRow("保留历史条数", detail: "10–500 条，超出后移除最早记录", symbol: "clock", trailing: [maxItemsField, maxItemsStepper]),
+            formRow("历史条数", detail: "10–500 条，超出后移除最早记录", symbol: "clock", trailing: [maxItemsField, maxItemsStepper]),
             hSeparator(),
             formRow("历史清理", detail: "移除所有历史，保留已保存片段", symbol: "tray", color: .secondaryLabelColor, trailing: [clearHistoryButton]),
             hSeparator(),
