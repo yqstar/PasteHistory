@@ -163,20 +163,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         AutoPaste.deliver(after: delay)
     }
 
-    private func menuHeaderTitle(primary: String, hotkey: String, count: Int) -> NSAttributedString {
-        let s = NSMutableAttributedString()
-        s.append(NSAttributedString(string: primary,
-            attributes: [.font: NSFont.systemFont(ofSize: 13, weight: .semibold),
-                         .foregroundColor: NSColor.labelColor]))
-        s.append(NSAttributedString(string: "  \(count)",
-            attributes: [.font: NSFont.systemFont(ofSize: 11),
-                         .foregroundColor: NSColor.secondaryLabelColor]))
-        s.append(NSAttributedString(string: "      \(hotkey)",
-            attributes: [.font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
-                         .foregroundColor: NSColor.secondaryLabelColor]))
-        return s
-    }
-
     private func makeMenuAction(title: String, symbol: String, action: Selector) -> NSMenuItem {
         let mi = NSMenuItem(title: title, action: action, keyEquivalent: "")
         mi.target = self
@@ -330,10 +316,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.removeAllItems()
 
+        let headerTitles = menuHeaderTitles([
+            (title: "历史选择器", count: store.items.count, hotkey: HotKeyConfig.history.display),
+            (title: "片段选择器", count: snippetStore.items.count, hotkey: HotKeyConfig.snippet.display),
+        ])
         let header = NSMenuItem(title: "", action: #selector(summonHistory), keyEquivalent: "")
-        header.attributedTitle = menuHeaderTitle(primary: "历史选择器",
-                                                 hotkey: HotKeyConfig.history.display,
-                                                 count: store.items.count)
+        header.attributedTitle = headerTitles[0]
         header.image = menuSymbol("clock.arrow.circlepath", pointSize: 16, weight: .medium)
         header.target = self
         menu.addItem(header)
@@ -360,9 +348,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let snippetHeader = NSMenuItem(title: "", action: #selector(openSnippetPickerWindow),
                                        keyEquivalent: "")
-        snippetHeader.attributedTitle = menuHeaderTitle(primary: "片段选择器",
-                                                        hotkey: HotKeyConfig.snippet.display,
-                                                        count: snippetStore.items.count)
+        snippetHeader.attributedTitle = headerTitles[1]
         snippetHeader.image = menuSymbol("square.stack",
                                          pointSize: 16, weight: .medium)
         snippetHeader.target = self
