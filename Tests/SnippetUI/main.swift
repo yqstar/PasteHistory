@@ -85,6 +85,117 @@ private func snapshot(_ window: NSWindow, _ name: String) throws {
     try bitmap.representation(using: .png, properties: [:])?.write(to: url)
 }
 
+private func testPaletteActions() throws {
+    let palette = PaletteController()
+    palette.title = "选择器操作测试"
+    var rows = [
+        PaletteRow(id: UUID(), icon: nil, title: "可以保存的文本", subtitle: "第一条", canSaveAsSnippet: true),
+        PaletteRow(id: UUID(), icon: nil, title: "图片", subtitle: "第二条"),
+        PaletteRow(id: UUID(), icon: nil, title: String(repeating: "很长的中英文标题 Title ", count: 10),
+                   subtitle: "第三条", canSaveAsSnippet: true),
+    ]
+    var activatedID: UUID?
+    var editedID: UUID?
+    var savedID: UUID?
+    var deletedID: UUID?
+    palette.provider = { query in rows.filter { query.isEmpty || $0.title.contains(query) } }
+    // Return failure deliberately: exercise activation without posting a real paste event.
+    palette.onActivate = { activatedID = rows[$0].id; return false }
+    palette.onEditRow = { editedID = rows[$0].id }
+    palette.onSaveRow = { savedID = rows[$0].id }
+    palette.onDelete = { deletedID = rows.remove(at: $0).id }
+    palette.show()
+    pump()
+    let window = NSApp.windows.first { $0.title == palette.title }!
+    let views = descendants(window.contentView!)
+    let search = views.compactMap { $0 as? NSTextField }.first { $0.isEditable }!
+    let table = views.compactMap { $0 as? NSTableView }.first!
+    func iconButton(_ label: String) -> NSButton {
+        views.compactMap { $0 as? NSButton }.first { $0.accessibilityLabel() == label }!
+    }
+    func typeQuery(_ query: String) {
+        search.stringValue = query
+        search.delegate?.controlTextDidChange?(Notification(name: NSControl.textDidChangeNotification, object: search))
+        pump()
+    }
+    func key(_ code: Int, characters: String, modifiers: NSEvent.ModifierFlags = []) {
+        let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers,
+                                    timestamp: scriptedKeyTimestamp, windowNumber: window.windowNumber,
+                                    context: nil, characters: characters, charactersIgnoringModifiers: characters,
+                                    isARepeat: false, keyCode: UInt16(code))!
+        NSApp.postEvent(event, atStart: false)
+        pump()
+    }
+    let clear = iconButton("清空搜索")
+    let delete = iconButton("删除所选项（⌘⌫）")
+    let paste = buttons(window, title: "粘贴").first!
+    let save = buttons(window, title: "存为片段").first!
+    let edit = buttons(window, title: "编辑").first!
+    check(window.isKeyWindow, "选择器操作测试开始时窗口已获得键盘焦点")
+    check(clear.isHidden && paste.isEnabled && delete.isEnabled && save.isEnabled,
+          "有选中内容时启用真实操作按钮，空搜索隐藏清除入口")
+    click(window, "粘贴")
+    check(activatedID == rows[0].id, "粘贴按钮调用当前选中项")
+    check(window.isVisible, "恢复失败时保留选择器窗口")
+    click(window, "编辑")
+    click(window, "存为片段")
+    check(editedID == rows[0].id && savedID == rows[0].id, "编辑和存为片段按钮调用当前选中项")
+
+    table.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
+    check(!save.isEnabled && paste.isEnabled && edit.isEnabled, "图片不可存为文本片段，其他可用操作保持启用")
+    key(kVK_ANSI_S, characters: "s", modifiers: .command)
+    check(savedID == rows[0].id, "图片行的保存快捷键与禁用按钮保持一致")
+    key(kVK_Delete, characters: "\u{7f}", modifiers: [.command, .shift])
+    check(rows.count == 3, "带额外修饰键的删除组合不触发列表删除")
+    let survivorID = rows[2].id
+    let removedID = rows[1].id
+    delete.performClick(nil)
+    pump()
+    check(deletedID == removedID && table.numberOfRows == 2 && table.selectedRow == 1 && save.isEnabled,
+          "点击删除后更新真实数据、选择相邻项并同步按钮状态")
+    click(window, "编辑")
+    check(editedID == survivorID, "删除后继续编辑的目标与当前选中项一致")
+
+    typeQuery("没有匹配的内容")
+    check(table.numberOfRows == 0 && !clear.isHidden && !paste.isEnabled && !delete.isEnabled && !save.isEnabled && !edit.isEnabled,
+          "搜索无结果时禁用所有依赖所选项的操作")
+    window.setContentSize(NSSize(width: 440, height: 320))
+    try snapshot(window, "palette-actions-empty-small")
+    clear.performClick(nil)
+    pump()
+    check(search.stringValue.isEmpty && table.numberOfRows == 2 && clear.isHidden && paste.isEnabled,
+          "清空搜索后恢复真实列表与操作状态")
+    check(window.firstResponder === search.currentEditor(), "清空搜索后焦点回到输入框")
+    typeQuery("可以保存")
+    window.makeFirstResponder(table)
+    key(kVK_ANSI_F, characters: "f", modifiers: .command)
+    check(window.firstResponder === search.currentEditor() &&
+          (search.currentEditor() as? NSTextView)?.selectedRange().length == (search.stringValue as NSString).length,
+          "⌘F 从列表返回搜索并选中现有查询")
+    key(kVK_DownArrow, characters: "\u{f701}")
+    key(kVK_Return, characters: "\r")
+    check(activatedID == rows[0].id, "搜索框中方向键与 Return 保持可用")
+    clear.performClick(nil)
+    pump()
+    window.makeFirstResponder(table)
+    table.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
+    key(kVK_Return, characters: "\r")
+    check(activatedID == survivorID, "列表获得焦点后 Return 仍能激活当前项")
+
+    let visibleButtons = descendants(window.contentView!).compactMap { $0 as? NSButton }
+        .filter { !$0.isHiddenOrHasHiddenAncestor }
+    check(visibleButtons.allSatisfy { window.contentView!.bounds.contains($0.convert($0.bounds, to: window.contentView!)) },
+          "最小窗口与长标题下所有操作按钮完整可见")
+    try snapshot(window, "palette-actions-populated-small")
+    key(kVK_Escape, characters: "\u{1b}")
+    check(!window.isVisible, "列表获得焦点后 Esc 可以关闭窗口")
+    palette.show()
+    pump()
+    iconButton("关闭（Esc）").performClick(nil)
+    pump()
+    check(!window.isVisible, "显式关闭按钮可关闭重开的选择器")
+}
+
 private final class StubReleaseChecker: ReleaseChecking {
     var calls = 0
     var completion: ((Result<PublishedRelease, Error>) -> Void)?
@@ -391,6 +502,7 @@ private func runTests() throws {
     pump()
     check(recorders.allSatisfy { $0.title != "按下组合键…" }, "关闭设置会停止快捷键录制")
     try testUpdateWindow()
+    try testPaletteActions()
 }
 
 setbuf(stdout, nil)
@@ -402,14 +514,18 @@ let inputMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp,
                                                               .rightMouseDown, .rightMouseUp]) { event in
     event.type == .keyDown && event.timestamp == scriptedKeyTimestamp ? event : nil
 }
-DispatchQueue.main.async {
-    do {
-        if CommandLine.arguments.contains("--updates-only") { try testUpdateWindow() }
-        else { try runTests() }
+// A command-line AppKit tool must finish launching before testing window activation.
+let launchObserver = NotificationCenter.default.addObserver(forName: NSApplication.didFinishLaunchingNotification,
+                                                            object: app, queue: .main) { _ in
+    DispatchQueue.main.async {
+        do {
+            if CommandLine.arguments.contains("--updates-only") { try testUpdateWindow() }
+            else { try runTests() }
+        }
+        catch { failures += 1; print("FAIL: \(error)") }
+        print(failures == 0 ? "PASS: 片段界面回归全部通过" : "FAIL: 共 \(failures) 项失败")
+        if let inputMonitor { NSEvent.removeMonitor(inputMonitor) }
+        exit(failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE)
     }
-    catch { failures += 1; print("FAIL: \(error)") }
-    print(failures == 0 ? "PASS: 片段界面回归全部通过" : "FAIL: 共 \(failures) 项失败")
-    if let inputMonitor { NSEvent.removeMonitor(inputMonitor) }
-    exit(failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE)
 }
 app.run()

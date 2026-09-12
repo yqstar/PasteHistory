@@ -120,6 +120,7 @@ final class PaletteCellView: NSTableCellView {
         titleLabel.stringValue = row.title
         subLabel.stringValue = row.subtitle
         subLabel.isHidden = row.subtitle.isEmpty
+        toolTip = [row.title, row.subtitle].filter { !$0.isEmpty }.joined(separator: "\n")
 
         let nextBadges = [(row.badge, row.badgeColor, true), (row.accessoryBadge, row.accessoryBadgeColor, false)].compactMap { text, color, isKind in
             text.map { Badge(text: $0, color: color, isKind: isKind) }
@@ -154,8 +155,6 @@ final class PaletteController: NSObject, NSTableViewDataSource, NSTableViewDeleg
     var title = "粘贴历史"
     var symbolName = "clock.arrow.circlepath"
     var placeholder = "搜索…"
-    var footerHints: [(cap: String, text: String)] = [("↩", "粘贴"), ("esc", "关闭")]
-    var footerSeparatorIndex: Int?
     var emptyText = "暂无内容"
     var emptyDetail = "复制文本、图片或文件后，会自动出现在这里。"
     var createActionTitle = "新建"
@@ -169,6 +168,7 @@ final class PaletteController: NSObject, NSTableViewDataSource, NSTableViewDeleg
     private var window: NSWindow!
     private var searchField: NSTextField!
     private var searchSurface: InputSurfaceView!
+    private var clearSearchButton: NSButton!
     private var countLabel: NSTextField!
     private var tableView: NSTableView!
     private var scroll: NSScrollView!
@@ -176,16 +176,19 @@ final class PaletteController: NSObject, NSTableViewDataSource, NSTableViewDeleg
     private var emptyDetailLabel: NSTextField!
     private var emptyIcon: NSImageView!
     private var emptyState: NSStackView!
-    private var footerGroups: [NSView] = []
+    private var pasteButton: NSButton!
+    private var deleteButton: NSButton?
+    private var editButton: NSButton?
+    private var saveButton: NSButton?
     private var rows: [PaletteRow] = []
     private var query = ""
-    private var deleteMonitor: Any?
+    private var keyboardMonitor: Any?
     private var previousApp: NSRunningApplication?
     private var isHiding = false
 
     var isVisible: Bool { window?.isVisible ?? false }
 
-    deinit { removeDeleteMonitor() }
+    deinit { removeKeyboardMonitor() }
 
     func toggle() {
         if isVisible {
@@ -212,7 +215,7 @@ final class PaletteController: NSObject, NSTableViewDataSource, NSTableViewDeleg
         centerWindowOnPointerScreen(window)
         window.makeKeyAndOrderFront(nil)
         window.makeFirstResponder(searchField)
-        installDeleteMonitor()
+        installKeyboardMonitor()
     }
 
     @discardableResult
@@ -221,7 +224,7 @@ final class PaletteController: NSObject, NSTableViewDataSource, NSTableViewDeleg
         isHiding = true
         defer { isHiding = false }
 
-        removeDeleteMonitor()
+        removeKeyboardMonitor()
         let prev = previousApp
         previousApp = nil
         window?.orderOut(nil)
@@ -244,6 +247,7 @@ final class PaletteController: NSObject, NSTableViewDataSource, NSTableViewDeleg
         rows = provider?(query) ?? []
         tableView?.reloadData()
         let empty = rows.isEmpty
+        clearSearchButton?.isHidden = query.isEmpty
         countLabel?.stringValue = query.isEmpty ? "\(rows.count) 条" : "\(rows.count) 条结果"
         emptyLabel?.stringValue = query.isEmpty ? emptyText : "没有找到相关内容"
         emptyDetailLabel?.stringValue = query.isEmpty ? emptyDetail : "试试其他关键词，或缩短搜索内容。"
@@ -309,6 +313,10 @@ final class PaletteController: NSObject, NSTableViewDataSource, NSTableViewDeleg
         searchSurface.focusTarget = searchField
         searchSurface.addSubview(glyph)
         searchSurface.addSubview(searchField)
+        clearSearchButton = UIStyle.iconButton("xmark.circle.fill", label: "清空搜索",
+                                              target: self, action: #selector(clearSearch))
+        clearSearchButton.isHidden = true
+        searchSurface.addSubview(clearSearchButton)
         let headerChrome = ChromeView()
         let footerChrome = ChromeView()
 
@@ -389,7 +397,9 @@ final class PaletteController: NSObject, NSTableViewDataSource, NSTableViewDeleg
             glyph.widthAnchor.constraint(equalToConstant: 18),
             searchField.centerYAnchor.constraint(equalTo: searchSurface.centerYAnchor),
             searchField.leadingAnchor.constraint(equalTo: glyph.trailingAnchor, constant: 8),
-            searchField.trailingAnchor.constraint(equalTo: searchSurface.trailingAnchor, constant: -12),
+            searchField.trailingAnchor.constraint(equalTo: clearSearchButton.leadingAnchor, constant: -4),
+            clearSearchButton.trailingAnchor.constraint(equalTo: searchSurface.trailingAnchor, constant: -7),
+            clearSearchButton.centerYAnchor.constraint(equalTo: searchSurface.centerYAnchor),
 
             headerChrome.topAnchor.constraint(equalTo: content.topAnchor),
             headerChrome.leadingAnchor.constraint(equalTo: content.leadingAnchor),
@@ -408,27 +418,36 @@ final class PaletteController: NSObject, NSTableViewDataSource, NSTableViewDeleg
 
             bottomDivider.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             bottomDivider.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            bottomDivider.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -46),
+            bottomDivider.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -52),
 
             footerChrome.topAnchor.constraint(equalTo: bottomDivider.bottomAnchor),
             footerChrome.bottomAnchor.constraint(equalTo: content.bottomAnchor),
             footerChrome.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             footerChrome.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            footer.centerXAnchor.constraint(equalTo: content.centerXAnchor),
-            footer.centerYAnchor.constraint(equalTo: bottomDivider.bottomAnchor, constant: 23),
-            footer.leadingAnchor.constraint(greaterThanOrEqualTo: content.leadingAnchor, constant: 12),
-            footer.trailingAnchor.constraint(lessThanOrEqualTo: content.trailingAnchor, constant: -12),
+            footer.centerYAnchor.constraint(equalTo: footerChrome.centerYAnchor),
+            footer.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
+            footer.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
+        ])
+
+        let closeButton = UIStyle.iconButton("xmark", label: "关闭（Esc）",
+                                             target: self, action: #selector(closePalette))
+        closeButton.keyEquivalent = "\u{1b}"
+        closeButton.keyEquivalentModifierMask = []
+        headerChrome.addSubview(closeButton)
+        NSLayoutConstraint.activate([
+            closeButton.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
+            closeButton.centerYAnchor.constraint(equalTo: headingStack.centerYAnchor),
         ])
         if onCreate != nil {
             let createButton = makeCreateButton()
             headerChrome.addSubview(createButton)
             NSLayoutConstraint.activate([
-                createButton.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
+                createButton.trailingAnchor.constraint(equalTo: closeButton.leadingAnchor, constant: -10),
                 createButton.centerYAnchor.constraint(equalTo: headingStack.centerYAnchor),
                 headingStack.trailingAnchor.constraint(lessThanOrEqualTo: createButton.leadingAnchor, constant: -12),
             ])
         } else {
-            headingStack.trailingAnchor.constraint(lessThanOrEqualTo: content.trailingAnchor, constant: -20).isActive = true
+            headingStack.trailingAnchor.constraint(lessThanOrEqualTo: closeButton.leadingAnchor, constant: -12).isActive = true
         }
     }
 
@@ -450,45 +469,102 @@ final class PaletteController: NSObject, NSTableViewDataSource, NSTableViewDeleg
     @objc private func createItem() { onCreate?() }
 
     private func buildFooter() -> NSView {
-        var groups: [NSView] = []
-        for (index, hint) in footerHints.enumerated() {
-            if footerSeparatorIndex == index {
-                let separator = UIStyle.separator()
-                separator.widthAnchor.constraint(equalToConstant: 1).isActive = true
-                separator.heightAnchor.constraint(equalToConstant: 18).isActive = true
-                groups.append(separator)
-            }
-            let cap = PillView(text: hint.cap, font: .systemFont(ofSize: 11, weight: .medium),
-                               textColor: .secondaryLabelColor, fill: UIStyle.surface, stroke: UIStyle.border)
-            let lbl = NSTextField(labelWithString: hint.text)
-            lbl.font = .systemFont(ofSize: 11)
-            lbl.textColor = .secondaryLabelColor
-            let s = NSStackView(views: [cap, lbl])
-            s.orientation = .horizontal
-            s.alignment = .centerY
-            s.spacing = 5
-            groups.append(s)
-            footerGroups.append(s)
-        }
-        let footer = NSStackView(views: groups)
+        let navigation = NSStackView(views: [
+            PillView(text: "↑ ↓", font: .systemFont(ofSize: 11, weight: .medium),
+                     textColor: .secondaryLabelColor, fill: UIStyle.surface, stroke: UIStyle.border),
+            UIStyle.label("选择", size: 11, color: .secondaryLabelColor),
+        ])
+        navigation.spacing = 6
+        navigation.alignment = .centerY
+
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.init(1), for: .horizontal)
+        let footer = NSStackView(views: [navigation, spacer])
         footer.orientation = .horizontal
         footer.alignment = .centerY
-        footer.spacing = 12
+        footer.spacing = 10
+
+        if onDelete != nil {
+            let button = UIStyle.iconButton("trash", label: "删除所选项（⌘⌫）",
+                                            target: self, action: #selector(deleteSelection))
+            deleteButton = button
+            footer.addArrangedSubview(button)
+        }
+        if onSaveRow != nil {
+            let button = makeActionButton("存为片段", action: #selector(saveSelection), shortcut: "⌘S")
+            saveButton = button
+            footer.addArrangedSubview(button)
+        }
+        if onEditRow != nil {
+            let button = makeActionButton("编辑", action: #selector(editSelection), shortcut: "⌘E")
+            editButton = button
+            footer.addArrangedSubview(button)
+        }
+        pasteButton = makeActionButton("粘贴", action: #selector(pasteSelection), shortcut: "↩")
+        pasteButton.keyEquivalent = "\r"
+        pasteButton.keyEquivalentModifierMask = []
+        pasteButton.bezelColor = .controlAccentColor
+        pasteButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 76).isActive = true
+        footer.addArrangedSubview(pasteButton)
+        for view in footer.arrangedSubviews where view !== spacer {
+            footer.setVisibilityPriority(.mustHold, for: view)
+        }
         return footer
     }
 
+    private func makeActionButton(_ title: String, action: Selector, shortcut: String) -> NSButton {
+        let button = NSButton(title: title, target: self, action: action)
+        button.bezelStyle = .rounded
+        button.controlSize = .regular
+        button.font = .systemFont(ofSize: 12, weight: .medium)
+        button.toolTip = "\(title)（\(shortcut)）"
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.setContentHuggingPriority(.required, for: .horizontal)
+        button.setContentCompressionResistancePriority(.required, for: .horizontal)
+        return button
+    }
+
+    private var selectedIndex: Int? {
+        guard let tableView, rows.indices.contains(tableView.selectedRow) else { return nil }
+        return tableView.selectedRow
+    }
+
     private func updateFooterState() {
-        let selected = tableView?.selectedRow ?? -1
-        let row = rows.indices.contains(selected) ? rows[selected] : nil
-        for (hint, group) in zip(footerHints, footerGroups) {
-            let enabled: Bool
-            switch hint.cap {
-            case "↩", "⌘⌫", "⌘E": enabled = row != nil
-            case "⌘S": enabled = row?.canSaveAsSnippet == true
-            default: enabled = true
-            }
-            group.alphaValue = enabled ? 1 : 0.4
-        }
+        let row = selectedIndex.map { rows[$0] }
+        pasteButton?.isEnabled = row != nil && onActivate != nil
+        deleteButton?.isEnabled = row != nil
+        editButton?.isEnabled = row != nil
+        saveButton?.isEnabled = row?.canSaveAsSnippet == true
+    }
+
+    @objc private func clearSearch() {
+        window.makeFirstResponder(searchField)
+        searchField.stringValue = ""
+        query = ""
+        reload()
+    }
+
+    @objc private func closePalette() { hide() }
+
+    @objc private func pasteSelection() {
+        guard let selectedIndex else { return }
+        activate(selectedIndex)
+    }
+
+    @objc private func deleteSelection() {
+        guard let selectedIndex, let onDelete else { return }
+        onDelete(selectedIndex)
+        reload(preserveSelection: true)
+    }
+
+    @objc private func editSelection() {
+        guard let selectedIndex else { return }
+        onEditRow?(selectedIndex)
+    }
+
+    @objc private func saveSelection() {
+        guard let selectedIndex, rows[selectedIndex].canSaveAsSnippet else { return }
+        onSaveRow?(selectedIndex)
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) { updateFooterState() }
@@ -497,36 +573,38 @@ final class PaletteController: NSObject, NSTableViewDataSource, NSTableViewDeleg
         PaletteRowView()
     }
 
-    private func installDeleteMonitor() {
-        guard deleteMonitor == nil,
-              (onCreate != nil || onDelete != nil || onEditRow != nil || onSaveRow != nil) else { return }
-        deleteMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
+    private func installKeyboardMonitor() {
+        guard keyboardMonitor == nil else { return }
+        keyboardMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
             guard let self = self, self.window.isKeyWindow else { return e }
             let actionModifiers = e.modifierFlags.intersection([.command, .control, .option, .shift])
+            if actionModifiers == .command, Int(e.keyCode) == kVK_ANSI_F {
+                self.window.makeFirstResponder(self.searchField)
+                self.searchField.selectText(nil)
+                return nil
+            }
             if actionModifiers == .command, Int(e.keyCode) == kVK_ANSI_N, let onCreate = self.onCreate {
                 onCreate()
                 return nil
             }
-            let row = self.tableView.selectedRow
-            guard row >= 0, row < self.rows.count else { return e }
-            if e.modifierFlags.contains(.command), Int(e.keyCode) == kVK_Delete {
-                self.onDelete?(row)
-                self.reload(preserveSelection: true)
+            guard self.selectedIndex != nil else { return e }
+            if actionModifiers == .command, Int(e.keyCode) == kVK_Delete, self.onDelete != nil {
+                self.deleteSelection()
                 return nil
             }
-            if actionModifiers == .command, e.charactersIgnoringModifiers == "e", let onEdit = self.onEditRow {
-                onEdit(row)
+            if actionModifiers == .command, e.charactersIgnoringModifiers == "e", self.onEditRow != nil {
+                self.editSelection()
                 return nil
             }
-            if actionModifiers == .command, Int(e.keyCode) == kVK_ANSI_S, let onSave = self.onSaveRow {
-                onSave(row)
+            if actionModifiers == .command, Int(e.keyCode) == kVK_ANSI_S, self.onSaveRow != nil {
+                self.saveSelection()
                 return nil
             }
             return e
         }
     }
-    private func removeDeleteMonitor() {
-        if let m = deleteMonitor { NSEvent.removeMonitor(m); deleteMonitor = nil }
+    private func removeKeyboardMonitor() {
+        if let monitor = keyboardMonitor { NSEvent.removeMonitor(monitor); keyboardMonitor = nil }
     }
 
     private func activate(_ row: Int) {

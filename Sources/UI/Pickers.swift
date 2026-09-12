@@ -19,8 +19,6 @@ final class HistoryWindowController {
         palette.symbolName = "clock.arrow.circlepath"
         palette.placeholder = "搜索粘贴历史…"
         palette.emptyText = "还没有粘贴历史"
-        palette.footerHints = [("↩", "粘贴"), ("⌘⌫", "删除"), ("esc", "关闭"), ("⌘S", "保存片段")]
-        palette.footerSeparatorIndex = 3
         palette.provider = { [weak self] q in self?.rows(for: q) ?? [] }
         palette.onActivate = { [weak self] i in self?.activate(i) ?? false }
         palette.onDelete = { [weak self] i in self?.deleteAt(i) }
@@ -113,8 +111,6 @@ final class SnippetPickerWindowController {
         palette.emptyText = "把常用内容存为片段"
         palette.emptyDetail = "代码、链接或文本，保存一次，随时粘贴。"
         palette.createActionTitle = "新建片段"
-        palette.footerHints = [("↩", "粘贴"), ("⌘⌫", "删除"), ("esc", "关闭"), ("⌘N", "新建"), ("⌘E", "编辑")]
-        palette.footerSeparatorIndex = 3
         palette.onCreate = { [weak self] in self?.create() }
         palette.provider = { [weak self] q in self?.rows(for: q) ?? [] }
         palette.onActivate = { [weak self] i in self?.activate(i) ?? false }

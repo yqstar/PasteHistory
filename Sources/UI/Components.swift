@@ -82,6 +82,24 @@ enum UIStyle {
         line.translatesAutoresizingMaskIntoConstraints = false
         return line
     }
+
+    static func iconButton(_ symbol: String, label: String, target: AnyObject, action: Selector) -> NSButton {
+        let button = NSButton(title: "", target: target, action: action)
+        button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+        button.imagePosition = .imageOnly
+        button.bezelStyle = .accessoryBarAction
+        button.isBordered = false
+        button.imageScaling = .scaleProportionallyDown
+        button.contentTintColor = .secondaryLabelColor
+        button.toolTip = label
+        button.setAccessibilityLabel(label)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            button.widthAnchor.constraint(equalToConstant: 28),
+            button.heightAnchor.constraint(equalToConstant: 28),
+        ])
+        return button
+    }
 }
 
 class SurfaceView: NSView {
