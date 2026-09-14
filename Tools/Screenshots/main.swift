@@ -131,15 +131,21 @@ private func renderScreenshots(output: URL, iconURL: URL) throws {
     emptyPicker.onCreate = { editor.showNew() }
     for (name, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
         NSApp.appearance = NSAppearance(named: appearance)
+        historyController.show()
+        let historyWindow = try findWindow("粘贴历史")
+        historyWindow.setFrame(NSRect(origin: historyWindow.frame.origin, size: historyWindow.minSize), display: true)
+        try snapshot(historyWindow, to: qa, name: "history-small-\(name)")
+        historyWindow.orderOut(nil)
+
         emptyPicker.show()
         let emptyWindow = try findWindow("代码片段")
-        emptyWindow.setContentSize(NSSize(width: 440, height: 320))
+        emptyWindow.setFrame(NSRect(origin: emptyWindow.frame.origin, size: emptyWindow.minSize), display: true)
         try snapshot(emptyWindow, to: qa, name: "empty-small-\(name)")
         emptyPicker.hide()
 
         picker.show()
         let pickerWindow = try findWindow("代码片段")
-        pickerWindow.setContentSize(NSSize(width: 440, height: 320))
+        pickerWindow.setFrame(NSRect(origin: pickerWindow.frame.origin, size: pickerWindow.minSize), display: true)
         try snapshot(pickerWindow, to: qa, name: "populated-small-\(name)")
         let search = descendants(pickerWindow.contentView!).compactMap { $0 as? NSTextField }
             .first { $0.isEditable }!

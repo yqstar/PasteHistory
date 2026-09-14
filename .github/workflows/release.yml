@@ -20,7 +20,7 @@ concurrency:
 
 jobs:
   build-and-release:
-    name: Build universal DMG and publish Release
+    name: Build universal app and DMG and publish Release
     runs-on: macos-15
     timeout-minutes: 20
 
@@ -96,14 +96,43 @@ jobs:
           ./make-dmg.sh
           hdiutil verify build/PasteHistory.dmg
 
-          ASSET="PasteHistory-${VERSION}-universal.dmg"
-          mv build/PasteHistory.dmg "build/$ASSET"
+          DMG_ASSET="PasteHistory-${VERSION}-universal.dmg"
+          mv build/PasteHistory.dmg "build/$DMG_ASSET"
           (
             cd build
-            shasum -a 256 "$ASSET" > "$ASSET.sha256"
+            shasum -a 256 "$DMG_ASSET" > "$DMG_ASSET.sha256"
+            shasum -a 256 -c "$DMG_ASSET.sha256"
           )
 
-          echo "ASSET=$ASSET" >> "$GITHUB_ENV"
+          echo "DMG_ASSET=$DMG_ASSET" >> "$GITHUB_ENV"
+
+      - name: Package and verify app ZIP
+        shell: bash
+        run: |
+          APP_ASSET="PasteHistory-${VERSION}-universal.app.zip"
+          # A macOS .app is a directory; ZIP keeps the complete bundle downloadable.
+          ditto -c -k --sequesterRsrc --keepParent \
+            build/PasteHistory.app "build/$APP_ASSET"
+
+          VERIFY_DIR="$(mktemp -d "$RUNNER_TEMP/pastehistory-app-check.XXXXXX")"
+          trap 'rm -rf "$VERIFY_DIR"' EXIT
+          ditto -x -k "build/$APP_ASSET" "$VERIFY_DIR"
+
+          EXTRACTED_APP="$VERIFY_DIR/PasteHistory.app"
+          BINARY="$EXTRACTED_APP/Contents/MacOS/PasteHistory"
+          [[ -d "$EXTRACTED_APP" ]]
+          [[ -x "$BINARY" ]]
+          lipo "$BINARY" -verify_arch arm64 x86_64
+          codesign --verify --deep --strict "$EXTRACTED_APP"
+          diff -qr build/PasteHistory.app "$EXTRACTED_APP"
+
+          (
+            cd build
+            shasum -a 256 "$APP_ASSET" > "$APP_ASSET.sha256"
+            shasum -a 256 -c "$APP_ASSET.sha256"
+          )
+
+          echo "APP_ASSET=$APP_ASSET" >> "$GITHUB_ENV"
 
       - name: Publish GitHub Release
         env:
@@ -111,8 +140,10 @@ jobs:
         shell: bash
         run: |
           gh release create "$TAG" \
-            "build/$ASSET#PasteHistory for macOS (Universal)" \
-            "build/$ASSET.sha256#SHA-256 checksum" \
+            "build/$DMG_ASSET#PasteHistory for macOS (Universal DMG)" \
+            "build/$DMG_ASSET.sha256#DMG SHA-256 checksum" \
+            "build/$APP_ASSET#PasteHistory.app for macOS (Universal ZIP)" \
+            "build/$APP_ASSET.sha256#App ZIP SHA-256 checksum" \
             --verify-tag \
             --notes-file "$RUNNER_TEMP/pastehistory-release-notes.md" \
             --generate-notes \

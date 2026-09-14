@@ -2,7 +2,8 @@ import Cocoa
 import Carbon.HIToolbox
 import Darwin
 
-// Runs only against temporary stores; it never starts clipboard monitoring or auto-paste.
+// Uses temporary stores and a private monitored pasteboard; it never auto-pastes.
+// Standard editing tests briefly seed and restore the general pasteboard.
 private var failures = 0
 private let scriptedKeyTimestamp: TimeInterval = 0.12345
 private func check(_ condition: @autoclosure () -> Bool, _ message: String) {
@@ -55,7 +56,7 @@ private func testPaletteCellReuse() {
 
 private func buttons(_ window: NSWindow, title: String) -> [NSButton] {
     descendants(window.contentView!).compactMap { $0 as? NSButton }
-        .filter { $0.title == title && !$0.isHiddenOrHasHiddenAncestor }
+        .filter { ($0.title == title || $0.accessibilityLabel() == title) && !$0.isHiddenOrHasHiddenAncestor }
 }
 
 private func click(_ window: NSWindow, _ title: String) {
@@ -83,6 +84,123 @@ private func snapshot(_ window: NSWindow, _ name: String) throws {
     view.cacheDisplay(in: view.bounds, to: bitmap)
     let url = URL(fileURLWithPath: CommandLine.arguments[1]).appendingPathComponent(name + ".png")
     try bitmap.representation(using: .png, properties: [:])?.write(to: url)
+}
+
+private func testEditorKeyboardShortcuts() throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("PasteHistoryEditing-\(UUID())")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let store = SnippetStore(baseDir: directory)
+    let editor = SnippetEditorWindowController(store: store)
+    let pasteboard = NSPasteboard.general
+    let previousItems = (pasteboard.pasteboardItems ?? []).map { item in
+        let copy = NSPasteboardItem()
+        for type in item.types {
+            if let data = item.data(forType: type) { copy.setData(data, forType: type) }
+        }
+        return copy
+    }
+    var ownedChangeCount = pasteboard.changeCount
+    defer {
+        if pasteboard.changeCount == ownedChangeCount {
+            pasteboard.clearContents()
+            if !previousItems.isEmpty { pasteboard.writeObjects(previousItems) }
+        }
+    }
+    func copyText(_ text: String) {
+        // Keep synthetic input out of a concurrently running clipboard history.
+        pasteboard.declareTypes([.string, NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")], owner: nil)
+        pasteboard.setString(text, forType: .string)
+        ownedChangeCount = pasteboard.changeCount
+    }
+    editor.showNew()
+    pump()
+    let window = NSApp.windows.first { $0.title == "新建片段" && $0.isVisible }!
+    defer { window.orderOut(nil) }
+    let views = descendants(window.contentView!)
+    let title = views.compactMap { $0 as? NSTextField }.first { $0.isEditable }!
+    let body = views.compactMap { $0 as? NSTextView }.first { !$0.isFieldEditor }!
+    func key(_ code: Int, characters: String, modifiers: NSEvent.ModifierFlags = .command) {
+        let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers,
+                                    timestamp: scriptedKeyTimestamp, windowNumber: window.windowNumber,
+                                    context: nil, characters: characters, charactersIgnoringModifiers: characters,
+                                    isARepeat: false, keyCode: UInt16(code))!
+        NSApp.postEvent(event, atStart: false)
+        pump()
+    }
+    let content = "粘贴回归测试 👋\nlet value = 42\n第三行"
+    copyText(content)
+    window.makeFirstResponder(body)
+    key(kVK_ANSI_V, characters: "v")
+    check(body.string == content && editor.hasUnsavedChanges, "新建片段正文可通过真实 ⌘V 事件粘贴多行 Unicode 文本")
+    let stats = TextStatistics(content)
+    check(views.compactMap { $0 as? NSTextField }.contains {
+        $0.stringValue == "\(stats.lineCount) 行 · \(stats.characterCount) 字符"
+    }, "快捷键粘贴后立即更新行数和字符数")
+    key(kVK_ANSI_Z, characters: "z")
+    check(body.string.isEmpty, "⌘Z 可以撤销正文粘贴")
+    // Shift menu equivalents require the native keyboard-layout metadata that
+    // NSEvent.keyEvent omits. Dispatch directly to the app's menu, since the
+    // CG-backed event has no test window number. Never post a global event.
+    let redoEvent = CGEvent(keyboardEventSource: nil, virtualKey: CGKeyCode(kVK_ANSI_Z), keyDown: true)!
+    redoEvent.flags = [.maskCommand, .maskShift]
+    _ = NSApp.mainMenu?.performKeyEquivalent(with: NSEvent(cgEvent: redoEvent)!)
+    pump()
+    check(body.string == content, "⇧⌘Z 可以重做正文粘贴")
+    key(kVK_ANSI_A, characters: "a")
+    check(body.selectedRange() == NSRange(location: 0, length: (content as NSString).length), "⌘A 可以全选正文")
+    copyText("替换后的正文\n保留换行")
+    key(kVK_ANSI_V, characters: "v")
+    check(body.string == "替换后的正文\n保留换行", "⌘V 可以替换正文选区")
+    body.setSelectedRange(NSRange(location: (body.string as NSString).length, length: 0))
+    key(kVK_Return, characters: "\r", modifiers: [])
+    check(window.isVisible && body.string == "替换后的正文\n保留换行\n" && store.items.isEmpty,
+          "正文 Return 保持换行，不会误触发保存")
+    try snapshot(window, "snippet-keyboard-paste")
+    window.makeFirstResponder(title)
+    copyText("快捷键标题")
+    key(kVK_ANSI_V, characters: "v")
+    check(title.stringValue == "快捷键标题", "标题输入框也支持 ⌘V")
+    click(window, "保存")
+    check(store.items.first?.title == "快捷键标题" && store.items.first?.content == "替换后的正文\n保留换行\n",
+          "通过快捷键粘贴的标题与正文可完整保存")
+    guard let saved = store.items.first else { return }
+    editor.showEdit(saved)
+    pump()
+    window.makeFirstResponder(body)
+    key(kVK_ANSI_A, characters: "a")
+    copyText("编辑已有片段时粘贴")
+    key(kVK_ANSI_V, characters: "v")
+    click(window, "保存")
+    check(store.items.first?.id == saved.id && store.items.first?.content == "编辑已有片段时粘贴",
+          "编辑已有片段时，⌘A / ⌘V 更新原片段")
+}
+
+private func checkPickerShortcuts(_ window: NSWindow, actions: [String]) {
+    let content = window.contentView!
+    content.layoutSubtreeIfNeeded()
+    let visible = descendants(content).filter { !$0.isHiddenOrHasHiddenAncestor }
+    let labels = visible.compactMap { $0 as? NSTextField }
+    let hints = labels.filter { $0.stringValue.contains("⌘F") }
+    check(hints.contains { $0.stringValue.contains("↑ ↓") && $0.stringValue.contains("Esc") }
+          && !labels.contains { $0.stringValue.contains("唤起") }, "选择器保留导航、搜索、关闭提示并移除唤起提示")
+    check(hints.allSatisfy {
+        content.bounds.contains($0.convert($0.bounds, to: content)) && $0.bounds.width + 1 >= $0.intrinsicContentSize.width
+    }, "最小窗口中快捷键说明完整显示且未被截断")
+    let actionButtons = visible.compactMap { $0 as? NSButton }
+    check(actions.allSatisfy { shortcut in actionButtons.contains { $0.title.contains(shortcut) } },
+          "选择器操作按钮直接显示对应快捷键，无需悬停")
+    check(actionButtons.allSatisfy { content.bounds.contains($0.convert($0.bounds, to: content)) },
+          "选择器快捷键操作按钮均在窗口范围内")
+    let footerButtons = actionButtons.filter { button in
+        actions.filter { $0 != "⌘N" }.contains { button.title.contains($0) }
+    }
+    if let hint = hints.first {
+        let hintRect = hint.convert(hint.bounds, to: content)
+        check(footerButtons.allSatisfy {
+            let buttonRect = $0.convert($0.bounds, to: content)
+            return abs(buttonRect.midY - hintRect.midY) <= 3 && buttonRect.minX > hintRect.maxX
+        }, "最小窗口中操作按钮与 Esc 等提示保持同一行且无重叠")
+    }
 }
 
 private func testPaletteActions() throws {
@@ -140,6 +258,11 @@ private func testPaletteActions() throws {
     click(window, "编辑")
     click(window, "存为片段")
     check(editedID == rows[0].id && savedID == rows[0].id, "编辑和存为片段按钮调用当前选中项")
+    editedID = nil
+    savedID = nil
+    key(kVK_ANSI_E, characters: "e", modifiers: .command)
+    key(kVK_ANSI_S, characters: "s", modifiers: .command)
+    check(editedID == rows[0].id && savedID == rows[0].id, "常显的 ⌘E / ⌘S 与按钮执行相同操作")
 
     table.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
     check(!save.isEnabled && paste.isEnabled && edit.isEnabled, "图片不可存为文本片段，其他可用操作保持启用")
@@ -159,7 +282,7 @@ private func testPaletteActions() throws {
     typeQuery("没有匹配的内容")
     check(table.numberOfRows == 0 && !clear.isHidden && !paste.isEnabled && !delete.isEnabled && !save.isEnabled && !edit.isEnabled,
           "搜索无结果时禁用所有依赖所选项的操作")
-    window.setContentSize(NSSize(width: 440, height: 320))
+    window.setFrame(NSRect(origin: window.frame.origin, size: window.minSize), display: true)
     try snapshot(window, "palette-actions-empty-small")
     clear.performClick(nil)
     pump()
@@ -322,6 +445,10 @@ private func testClipboardAndThumbnails(in directory: URL, defaults: UserDefault
         descendants(window.contentView!).contains { ($0 as? NSTextField)?.accessibilityLabel() == "搜索粘贴历史…" }
     }!
     try snapshot(window, "history-thumbnails")
+    window.setFrame(NSRect(origin: window.frame.origin, size: window.minSize), display: true)
+    pump()
+    checkPickerShortcuts(window, actions: ["⌘S", "⌘⌫", "↩"])
+    try snapshot(window, "history-shortcuts-small")
     let search = descendants(window.contentView!).compactMap { $0 as? NSTextField }.first { $0.isEditable }!
     window.makeFirstResponder(search)
     (window.firstResponder as? NSTextView)?.insertText("TAIL_MARKER", replacementRange: NSRange(location: NSNotFound, length: 0))
@@ -333,6 +460,7 @@ private func testClipboardAndThumbnails(in directory: URL, defaults: UserDefault
 
 private func runTests() throws {
     testPaletteCellReuse()
+    try testEditorKeyboardShortcuts()
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent("PasteHistoryUI-\(UUID())")
     defer { try? FileManager.default.removeItem(at: directory) }
     let suite = "PasteHistoryUITests.\(UUID())"
@@ -355,9 +483,14 @@ private func runTests() throws {
     let createButtons = buttons(pickerWindow, title: "新建片段")
     check(createButtons.count == 2, "空片段列表显示顶部和中央新建按钮")
     try snapshot(pickerWindow, "snippet-empty")
-    pickerWindow.setContentSize(NSSize(width: 440, height: 320))
+    pickerWindow.setFrame(NSRect(origin: pickerWindow.frame.origin, size: pickerWindow.minSize), display: true)
     pump()
+    checkPickerShortcuts(pickerWindow, actions: ["⌘N", "⌘E", "⌘⌫", "↩"])
     try snapshot(pickerWindow, "snippet-empty-small")
+    pickerWindow.appearance = NSAppearance(named: .darkAqua)
+    pump()
+    try snapshot(pickerWindow, "snippet-empty-small-dark")
+    pickerWindow.appearance = nil
     createButtons.first?.performClick(nil)
     pump()
     let window = NSApp.windows.first { $0.title == "新建片段" }!
@@ -508,6 +641,9 @@ private func runTests() throws {
 setbuf(stdout, nil)
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
+if !CommandLine.arguments.contains("--without-edit-menu") {
+    app.mainMenu = makeApplicationMenu()
+}
 // Real keyboard/mouse input must not edit synthetic drafts while the UI test owns focus.
 let inputMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp, .flagsChanged,
                                                               .leftMouseDown, .leftMouseUp,
@@ -519,7 +655,8 @@ let launchObserver = NotificationCenter.default.addObserver(forName: NSApplicati
                                                             object: app, queue: .main) { _ in
     DispatchQueue.main.async {
         do {
-            if CommandLine.arguments.contains("--updates-only") { try testUpdateWindow() }
+            if CommandLine.arguments.contains("--editing-only") { try testEditorKeyboardShortcuts() }
+            else if CommandLine.arguments.contains("--updates-only") { try testUpdateWindow() }
             else { try runTests() }
         }
         catch { failures += 1; print("FAIL: \(error)") }

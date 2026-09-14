@@ -85,8 +85,8 @@ build/              # 本机构建产物与测试截图，不提交到 Git
 
 1. 运行数据与搜索逻辑测试。
 2. 构建 Apple Silicon 与 Intel 双架构应用。
-3. 校验应用签名与 DMG。
-4. 生成带版本号的 Universal DMG 和 SHA-256 文件。
+3. 校验应用签名与 DMG，并验证 ZIP 解压后的应用权限、签名、双架构及文件完整性。
+4. 生成带版本号的 Universal DMG、包含完整 `PasteHistory.app` 的 `.app.zip`，以及各自的 SHA-256 文件。
 5. 从 `CHANGELOG.md` 提取对应版本的中文说明，并附加 GitHub 自动生成的变更链接后创建 Release。
 
 发布前，将 `Info.plist` 中的版本号更新为目标版本，并在 `CHANGELOG.md` 最上方添加该版本的记录与发布日期。工作流会校验标签和应用版本一致、对应说明非空。发布示例：

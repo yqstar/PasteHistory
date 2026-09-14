@@ -275,7 +275,7 @@ final class PaletteController: NSObject, NSTableViewDataSource, NSTableViewDeleg
         window.isMovableByWindowBackground = true
         window.isReleasedWhenClosed = false
         window.level = .floating
-        window.minSize = NSSize(width: 440, height: 320)
+        window.minSize = NSSize(width: 440, height: 360)
         window.delegate = self
         window.standardWindowButton(.closeButton)?.isHidden = true
         window.standardWindowButton(.miniaturizeButton)?.isHidden = true
@@ -374,6 +374,7 @@ final class PaletteController: NSObject, NSTableViewDataSource, NSTableViewDeleg
 
         let footer = buildFooter()
         footer.translatesAutoresizingMaskIntoConstraints = false
+        window.minSize.width = max(440, ceil(footer.fittingSize.width) + 40)
 
         content.addSubview(headerChrome)
         content.addSubview(footerChrome)
@@ -452,7 +453,7 @@ final class PaletteController: NSObject, NSTableViewDataSource, NSTableViewDeleg
     }
 
     private func makeCreateButton() -> NSButton {
-        let button = NSButton(title: createActionTitle, target: self, action: #selector(createItem))
+        let button = NSButton(title: "\(createActionTitle)  ⌘N", target: self, action: #selector(createItem))
         button.bezelStyle = .rounded
         button.image = NSImage(systemSymbolName: "plus", accessibilityDescription: nil)
         button.imagePosition = .imageLeading
@@ -460,6 +461,7 @@ final class PaletteController: NSObject, NSTableViewDataSource, NSTableViewDeleg
         button.font = .systemFont(ofSize: 12, weight: .medium)
         button.contentTintColor = .controlAccentColor
         button.toolTip = "\(createActionTitle)（⌘N）"
+        button.setAccessibilityLabel(createActionTitle)
         button.setContentHuggingPriority(.required, for: .horizontal)
         button.setContentCompressionResistancePriority(.required, for: .horizontal)
         button.translatesAutoresizingMaskIntoConstraints = false
@@ -469,24 +471,23 @@ final class PaletteController: NSObject, NSTableViewDataSource, NSTableViewDeleg
     @objc private func createItem() { onCreate?() }
 
     private func buildFooter() -> NSView {
-        let navigation = NSStackView(views: [
-            PillView(text: "↑ ↓", font: .systemFont(ofSize: 11, weight: .medium),
-                     textColor: .secondaryLabelColor, fill: UIStyle.surface, stroke: UIStyle.border),
-            UIStyle.label("选择", size: 11, color: .secondaryLabelColor),
-        ])
-        navigation.spacing = 6
-        navigation.alignment = .centerY
+        let navigation = UIStyle.label("↑ ↓ 选择    ⌘F 搜索    Esc 关闭", size: 11, color: .secondaryLabelColor)
+        navigation.setContentCompressionResistancePriority(.required, for: .horizontal)
 
         let spacer = NSView()
         spacer.setContentHuggingPriority(.init(1), for: .horizontal)
+        spacer.widthAnchor.constraint(greaterThanOrEqualToConstant: 12).isActive = true
         let footer = NSStackView(views: [navigation, spacer])
         footer.orientation = .horizontal
         footer.alignment = .centerY
         footer.spacing = 10
 
         if onDelete != nil {
-            let button = UIStyle.iconButton("trash", label: "删除所选项（⌘⌫）",
-                                            target: self, action: #selector(deleteSelection))
+            let button = makeActionButton("", action: #selector(deleteSelection), shortcut: "⌘⌫")
+            button.image = NSImage(systemSymbolName: "trash", accessibilityDescription: nil)
+            button.imagePosition = .imageLeading
+            button.toolTip = "删除所选项（⌘⌫）"
+            button.setAccessibilityLabel("删除所选项（⌘⌫）")
             deleteButton = button
             footer.addArrangedSubview(button)
         }
@@ -513,11 +514,12 @@ final class PaletteController: NSObject, NSTableViewDataSource, NSTableViewDeleg
     }
 
     private func makeActionButton(_ title: String, action: Selector, shortcut: String) -> NSButton {
-        let button = NSButton(title: title, target: self, action: action)
+        let button = NSButton(title: title.isEmpty ? shortcut : "\(title)  \(shortcut)", target: self, action: action)
         button.bezelStyle = .rounded
         button.controlSize = .regular
         button.font = .systemFont(ofSize: 12, weight: .medium)
         button.toolTip = "\(title)（\(shortcut)）"
+        button.setAccessibilityLabel(title)
         button.translatesAutoresizingMaskIntoConstraints = false
         button.setContentHuggingPriority(.required, for: .horizontal)
         button.setContentCompressionResistancePriority(.required, for: .horizontal)
